@@ -7,4 +7,3 @@ tesseract-ocr-tel
 tesseract-ocr-kan
 tesseract-ocr-mar
 tesseract-ocr-guj
-libgl1-mesa-glx
