@@ -2,6 +2,7 @@
 Comprehensive VER Data Extractor
 Extracts ALL 20 sections from a VER PDF into a flat dictionary suitable for Excel export.
 Uses native text extraction (PyMuPDF) for text PDFs, Tesseract OCR for scanned PDFs.
+Supports: English, Hindi, Odia, Tamil, Telugu, Kannada, Marathi, Gujarati.
 
 Reference format: VER_Tsupfume_2025-26.pdf (English, Nagaland)
 """
@@ -10,6 +11,35 @@ import json
 import fitz  # PyMuPDF
 from pathlib import Path
 from collections import OrderedDict
+
+# ── Language configuration ────────────────────────────────────
+
+SUPPORTED_LANGUAGES = {
+    "English": {"tesseract": "eng", "script": "Latin"},
+    "Hindi": {"tesseract": "hin+eng", "script": "Devanagari"},
+    "Odia": {"tesseract": "ori+hin+eng", "script": "Odia"},
+    "Tamil": {"tesseract": "tam+eng", "script": "Tamil"},
+    "Telugu": {"tesseract": "tel+eng", "script": "Telugu"},
+    "Kannada": {"tesseract": "kan+eng", "script": "Kannada"},
+    "Marathi": {"tesseract": "mar+eng", "script": "Devanagari"},
+    "Gujarati": {"tesseract": "guj+eng", "script": "Gujarati"},
+    "Auto-detect": {"tesseract": "eng", "script": "Latin"},
+}
+
+# State → language mapping for auto-detection
+STATE_LANGUAGE_MAP = {
+    "odisha": "Odia", "orissa": "Odia",
+    "tamil nadu": "Tamil", "tamilnadu": "Tamil",
+    "andhra pradesh": "Telugu", "telangana": "Telugu",
+    "karnataka": "Kannada",
+    "maharashtra": "Marathi",
+    "gujarat": "Gujarat",
+    "chhattisgarh": "Hindi", "madhya pradesh": "Hindi", "rajasthan": "Hindi",
+    "uttar pradesh": "Hindi", "bihar": "Hindi", "jharkhand": "Hindi",
+    "nagaland": "English", "meghalaya": "English", "mizoram": "English",
+    "manipur": "English", "assam": "English", "arunachal pradesh": "English",
+    "sikkim": "English", "tripura": "English",
+}
 
 
 # ── Master field definitions ─────────────────────────────────
@@ -180,50 +210,163 @@ def get_empty_record():
 
 # ── PDF text extraction ──────────────────────────────────────
 
-def extract_text_from_pdf(pdf_path: str) -> tuple[list[str], bool]:
+def extract_text_from_pdf(pdf_path: str, language: str = "Auto-detect",
+                          progress_callback=None) -> tuple[list[str], bool]:
     """Extract text from PDF. Returns (list_of_page_texts, is_native_text).
     Auto-detects whether PDF has native text or is scanned.
+    Falls back to Tesseract OCR for scanned PDFs.
     """
     doc = fitz.open(pdf_path)
     pages = []
     text_pages = 0
 
+    # First pass: try native text extraction
     for i in range(doc.page_count):
         text = doc[i].get_text()
         pages.append(text)
         if len(text.strip()) > 50:
             text_pages += 1
 
-    doc.close()
     is_native = text_pages / len(pages) > 0.5 if pages else False
-    return pages, is_native
+
+    if is_native:
+        doc.close()
+        return pages, True
+
+    # Scanned PDF → use Tesseract OCR
+    try:
+        import pytesseract
+        from PIL import Image
+        import io
+    except ImportError:
+        doc.close()
+        # Return whatever native text we got (partial)
+        return pages, False
+
+    # Determine Tesseract language string
+    lang_config = SUPPORTED_LANGUAGES.get(language, SUPPORTED_LANGUAGES["English"])
+    tess_lang = lang_config["tesseract"]
+
+    # Try image preprocessing if OpenCV available
+    try:
+        import cv2
+        import numpy as np
+        has_cv2 = True
+    except ImportError:
+        has_cv2 = False
+
+    pages = []  # Reset and OCR all pages
+    total = doc.page_count
+
+    for i in range(total):
+        if progress_callback and i % 10 == 0:
+            progress_callback(i, total, f"OCR page {i+1}/{total} ({tess_lang})...")
+
+        page = doc[i]
+        # Render at 300 DPI for better OCR
+        pix = page.get_pixmap(dpi=300)
+        img_bytes = pix.tobytes("png")
+        img = Image.open(io.BytesIO(img_bytes))
+
+        # Convert to grayscale
+        if img.mode != "L":
+            img = img.convert("L")
+
+        # Apply enhancement if OpenCV available
+        if has_cv2:
+            img_array = np.array(img)
+            denoised = cv2.fastNlMeansDenoising(img_array, None, h=12,
+                                                 templateWindowSize=7, searchWindowSize=21)
+            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+            enhanced = clahe.apply(denoised)
+            binary = cv2.adaptiveThreshold(enhanced, 255,
+                                           cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                           cv2.THRESH_BINARY, blockSize=15, C=8)
+            img = Image.fromarray(binary)
+
+        # Run Tesseract
+        try:
+            text = pytesseract.image_to_string(img, lang=tess_lang,
+                                                config='--oem 3 --psm 6')
+        except Exception:
+            text = ""
+
+        pages.append(text)
+
+    doc.close()
+    return pages, False
 
 
 def find_section_ranges(pages: list[str]) -> dict:
     """Detect VER section boundaries in the page texts.
     Returns dict: section_key -> (start_page_idx, end_page_idx)
     """
-    # Use \b or (?!\d) to prevent "Section - 2" matching "Section - 20"
+    # Multilingual section detection patterns
+    # English + Odia + Hindi + Tamil + Telugu + Kannada + Marathi + Gujarati
+    # Uses (?!\d) to prevent "Section - 2" matching "Section - 20"
+    def _sp(num, eng_kw, local_kws=""):
+        """Build section pattern: Section-N + English keyword + local script variants."""
+        parts = [rf'Section\s*[-–]\s*{num}(?!\d)']
+        if eng_kw:
+            parts.append(eng_kw)
+        # Odia numerals
+        odia_nums = {"2": "୨(?!୦)", "3": "୩", "4": "୪", "5": "୫", "6": "୬", "7": "୭",
+                     "8": "୮", "9": "୯", "10": "୧୦", "11": "୧୧", "12": "୧୨",
+                     "13": "୧୩", "14": "୧୪", "15": "୧୫", "16": "୧୬", "17": "୧୭",
+                     "18": "୧୮", "19": "୧୯", "20": "୨୦"}
+        if num in odia_nums:
+            parts.append(rf'ବିଭାଗ\s*[-–]\s*{odia_nums[num]}')
+        # Hindi/Marathi (Devanagari numerals)
+        hindi_nums = {"2": "२", "3": "३", "4": "४", "5": "५", "6": "६", "7": "७",
+                      "8": "८", "9": "९", "10": "१०", "11": "११", "12": "१२",
+                      "13": "१३", "14": "१४", "15": "१५", "16": "१६", "17": "१७",
+                      "18": "१८", "19": "१९", "20": "२०"}
+        if num in hindi_nums:
+            parts.append(rf'(?:विभाग|భాగం|பகுதி|ವಿಭಾಗ)\s*[-–]\s*{hindi_nums[num]}')
+        # Additional local keywords
+        if local_kws:
+            parts.append(local_kws)
+        return re.compile("|".join(parts), re.I)
+
     section_patterns = [
-        ("s2", re.compile(r'Section\s*[-–]\s*2(?!\d)|ବିଭାଗ\s*[-–]\s*୨(?!୦)|General\s+Information\s+of\s+Village', re.I)),
-        ("s3", re.compile(r'Section\s*[-–]\s*3\s+Village\s+History|ବିଭାଗ\s*[-–]\s*୩|3\.1\s+Documenting\s+Village', re.I)),
-        ("s4", re.compile(r'Section\s*[-–]\s*4(?!\d)|ବିଭାଗ\s*[-–]\s*୪|4\.1\.?\s+Cropping|Agro.?ecological\s+Knowledge', re.I)),
-        ("s5", re.compile(r'Section\s*[-–]\s*5(?!\d)|ବିଭାଗ\s*[-–]\s*୫|5\.1\s+Livestock', re.I)),
-        ("s6", re.compile(r'Section\s*[-–]\s*6(?!\d)|ବିଭାଗ\s*[-–]\s*୬|6\.1\s+Availability.*Water', re.I)),
-        ("s7", re.compile(r'Section\s*[-–]\s*7(?!\d)|ବିଭାଗ\s*[-–]\s*୭|7\.1\s+General\s+info', re.I)),
-        ("s8", re.compile(r'Section\s*[-–]\s*8(?!\d)|ବିଭାଗ\s*[-–]\s*୮|8\.1\s+General\s+info', re.I)),
-        ("s9", re.compile(r'Section\s*[-–]\s*9(?!\d)|ବିଭାଗ\s*[-–]\s*୯|9\.1\s+General\s+info', re.I)),
-        ("s10", re.compile(r'Section\s*[-–]\s*10(?!\d)|ବିଭାଗ\s*[-–]\s*୧୦|Grooves.*Sacred\s+groove', re.I)),
-        ("s11", re.compile(r'Section\s*[-–]\s*11(?!\d)|ବିଭାଗ\s*[-–]\s*୧୧|Ecologically\s+important\s+sites', re.I)),
-        ("s12", re.compile(r'Section\s*[-–]\s*12(?!\d)|ବିଭାଗ\s*[-–]\s*୧୨|List\s+of\s+Old\s+and\s+Giant', re.I)),
-        ("s13", re.compile(r'Section\s*[-–]\s*13(?!\d)|ବିଭାଗ\s*[-–]\s*୧୩|Locations\s+of\s+big\s+bee', re.I)),
-        ("s14", re.compile(r'Section\s*[-–]\s*14(?!\d)|ବିଭାଗ\s*[-–]\s*୧୪|Fire\s+incidence\s+in', re.I)),
-        ("s15", re.compile(r'Section\s*[-–]\s*15(?!\d)|ବିଭାଗ\s*[-–]\s*୧୫|15\.1\s+Bamboo', re.I)),
-        ("s16", re.compile(r'Section\s*[-–]\s*16(?!\d)|ବିଭାଗ\s*[-–]\s*୧୬|Medicinal\s+plants.*uses', re.I)),
-        ("s17", re.compile(r'Section\s*[-–]\s*17(?!\d)|ବିଭାଗ\s*[-–]\s*୧୭|Invasive\s+plants\s+in', re.I)),
-        ("s18", re.compile(r'Section\s*[-–]\s*18(?!\d)|ବିଭାଗ\s*[-–]\s*୧୮|Feral\s+animal\s+in', re.I)),
-        ("s19", re.compile(r'Section\s*[-–]\s*19(?!\d)|ବିଭାଗ\s*[-–]\s*୧୯|socially.*culturally\s+protected', re.I)),
-        ("s20", re.compile(r'Section\s*[-–]\s*20(?!\d)|ବିଭାଗ\s*[-–]\s*୨୦|20\.1\s+Tree\s+diversity', re.I)),
+        ("s2",  _sp("2",  r'General\s+Information\s+of\s+Village',
+                    r'सामान्य जानकारी|ସାଧାରଣ ତଥ୍ୟ|సాధారణ సమాచారం|பொது தகவல்|ಸಾಮಾನ್ಯ ಮಾಹಿತಿ')),
+        ("s3",  _sp("3",  r'3\.1\s+Documenting\s+Village|Village\s+History',
+                    r'गाँव का इतिहास|ଗ୍ରାମ ଇତିହାସ|గ్రామ చరిత్ర|கிராம வரலாறு|ಹಳ್ಳಿ ಇತಿಹಾಸ')),
+        ("s4",  _sp("4",  r'4\.1\.?\s+Cropping|Agro.?ecological\s+Knowledge',
+                    r'कृषि-पारिस्थितिक|କୃଷି-ପରିବେଶ|వ్యవసాయ|வேளாண்|ಕೃಷಿ-ಪರಿಸರ')),
+        ("s5",  _sp("5",  r'5\.1\s+Livestock',
+                    r'पशुधन|ପଶୁ|పశువులు|கால்நடை|ಜಾನುವಾರು')),
+        ("s6",  _sp("6",  r'6\.1\s+Availability.*Water|Waterscape',
+                    r'जलक्षेत्र|ଜଳ|నీటి వనరులు|நீர்|ಜಲ')),
+        ("s7",  _sp("7",  r'7\.1\s+General\s+info|Forest\s+Land',
+                    r'वन भूमि|ଜଙ୍ଗଲ|అడవి భూమి|வன நிலங்கள்|ಅರಣ್ಯ')),
+        ("s8",  _sp("8",  r'8\.1\s+General\s+info|Grassland|Grazing',
+                    r'चरागाह|ଘାସ ଜମି|పచ్చిక|மேய்ச்சல்|ಹುಲ್ಲುಗಾವಲು')),
+        ("s9",  _sp("9",  r'9\.1\s+General\s+info|Waste\s*[Ll]and|Revenue\s+Waste',
+                    r'राजस्व बंजर|ରାଜସ୍ୱ ଜମି|రెవెన్యూ|கழிவு நிலம்|ಕಂದಾಯ')),
+        ("s10", _sp("10", r'Grooves.*Sacred\s+groove|Sacred\s+[Gg]rove',
+                    r'पवित्र उपवन|ପବିତ୍ର ବନ|పవిత్ర వనం|புனித தோப்பு|ದೇವರ ಕಾಡು')),
+        ("s11", _sp("11", r'Ecologically\s+important\s+sites',
+                    r'पारिस्थितिक')),
+        ("s12", _sp("12", r'List\s+of\s+Old\s+and\s+Giant|Giant\s+tree',
+                    r'पुराने और विशाल पेड़|ପୁରାତନ ଗଛ')),
+        ("s13", _sp("13", r'Locations\s+of\s+big\s+bee|[Bb]ee\s+hive',
+                    r'मधुमक्खी|ମହୁମାଛି|తేనెటీగ|தேனீ|ಜೇನುಗೂಡು')),
+        ("s14", _sp("14", r'Fire\s+incidence\s+in',
+                    r'आग|ନିଆଁ|అగ్ని|தீ|ಬೆಂಕಿ')),
+        ("s15", _sp("15", r'15\.1\s+Bamboo|Local\s+Conservation\s+ethos',
+                    r'संरक्षण|ସଂରକ୍ଷଣ|సంరక్షణ|பாதுகாப்பு|ಸಂರಕ್ಷಣೆ')),
+        ("s16", _sp("16", r'Medicinal\s+plants.*uses',
+                    r'औषधीय|ଔଷଧୀୟ|ఔషధ|மருத்துவ|ಔಷಧ')),
+        ("s17", _sp("17", r'Invasive\s+plants\s+in',
+                    r'आक्रामक|ଆକ୍ରମଣକାରୀ|దాడి చేసే|ஊடுருவும்|ಆಕ್ರಮಣಕಾರಿ')),
+        ("s18", _sp("18", r'Feral\s+animal\s+in',
+                    r'जंगली जानवर|ବଣ୍ୟ ପ୍ରାଣୀ|వన్య జంతువులు|காட்டு விலங்கு|ಕಾಡು ಪ್ರಾಣಿ')),
+        ("s19", _sp("19", r'socially.*culturally\s+protected',
+                    r'सांस्कृतिक|ସାଂସ୍କୃତିକ|సాంస్కృతిక|பண்பாட்டு|ಸಾಂಸ್ಕೃತಿಕ')),
+        ("s20", _sp("20", r'20\.1\s+Tree\s+diversity|List\s+of\s+flora',
+                    r'वनस्पति और जीव|ଉଦ୍ଭିଦ ଓ ଜୀବଜନ୍ତୁ|వృక్షజాతి|தாவரங்கள்|ಸಸ್ಯ ಮತ್ತು ಪ್ರಾಣಿ')),
     ]
 
     # Detect TOC pages: pages where 3+ section headers appear
@@ -781,11 +924,13 @@ def parse_s20(text: str, record: dict):
 
 # ── Main extraction function ─────────────────────────────────
 
-def extract_village(pdf_path: str, progress_callback=None) -> dict:
+def extract_village(pdf_path: str, language: str = "Auto-detect",
+                    progress_callback=None) -> dict:
     """Extract ALL data from a VER PDF into a flat record dict.
 
     Args:
         pdf_path: Path to the PDF file
+        language: OCR language — one of SUPPORTED_LANGUAGES keys
         progress_callback: Optional callable(step, total, message) for UI progress
 
     Returns:
@@ -797,12 +942,18 @@ def extract_village(pdf_path: str, progress_callback=None) -> dict:
         if progress_callback:
             progress_callback(step, total, msg)
 
-    progress(1, 10, "Reading PDF...")
-    pages, is_native = extract_text_from_pdf(pdf_path)
-    record["total_pages"] = len(pages)
-    record["extraction_method"] = "native_text" if is_native else "ocr_required"
+    progress(1, 10, f"Reading PDF ({language})...")
 
-    progress(2, 10, f"Detected {'native text' if is_native else 'scanned'} PDF ({len(pages)} pages)")
+    def ocr_progress(page, total, msg):
+        pct = page / total if total else 0
+        progress(1 + int(pct * 2), 10, msg)
+
+    pages, is_native = extract_text_from_pdf(pdf_path, language=language,
+                                              progress_callback=ocr_progress)
+    record["total_pages"] = len(pages)
+    record["extraction_method"] = "native_text" if is_native else f"ocr_{language.lower()}"
+
+    progress(3, 10, f"{'Native text' if is_native else f'OCR ({language})'} — {len(pages)} pages")
 
     progress(3, 10, "Detecting sections...")
     sections = find_section_ranges(pages)

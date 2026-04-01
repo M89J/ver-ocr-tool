@@ -1,0 +1,10 @@
+tesseract-ocr
+tesseract-ocr-eng
+tesseract-ocr-hin
+tesseract-ocr-ori
+tesseract-ocr-tam
+tesseract-ocr-tel
+tesseract-ocr-kan
+tesseract-ocr-mar
+tesseract-ocr-guj
+libgl1-mesa-glx

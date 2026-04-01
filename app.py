@@ -19,7 +19,7 @@ from collections import OrderedDict
 
 # Add ETL directory to path
 sys.path.insert(0, str(Path(__file__).parent))
-from comprehensive_extract import extract_village, get_empty_record, MASTER_FIELDS
+from comprehensive_extract import extract_village, get_empty_record, MASTER_FIELDS, SUPPORTED_LANGUAGES
 
 # ── Page config ──────────────────────────────────────────────
 st.set_page_config(
@@ -190,9 +190,10 @@ with st.sidebar:
             st.rerun()
 
     st.markdown("---")
-    st.markdown("**Field count:** 113 columns per village")
+    st.markdown("**Languages**")
+    st.markdown("English, Hindi, Odia, Tamil, Telugu, Kannada, Marathi, Gujarati")
+    st.markdown("**Fields:** 114 columns per village")
     st.markdown("**Sections:** All 20 VER sections")
-    st.markdown("**Format:** Tsupfume (Nagaland) reference")
 
 
 # ── Main content ─────────────────────────────────────────────
@@ -200,7 +201,7 @@ st.markdown('<div class="main-header">VER Data Extraction Tool</div>', unsafe_al
 st.markdown('<div class="sub-header">Upload VER PDFs → Extract all 20 sections → Download master Excel sheet with all villages</div>', unsafe_allow_html=True)
 
 # Upload section
-col_upload, col_info = st.columns([2, 1])
+col_upload, col_lang, col_info = st.columns([2, 1, 1])
 
 with col_upload:
     uploaded_files = st.file_uploader(
@@ -209,6 +210,17 @@ with col_upload:
         accept_multiple_files=True,
         help="Upload one or more VER PDF files. Each PDF will be processed and added to the master sheet.",
     )
+
+with col_lang:
+    selected_language = st.selectbox(
+        "PDF Language",
+        options=list(SUPPORTED_LANGUAGES.keys()),
+        index=0,
+        help="Select the language of the scanned PDF. For typed/digital PDFs, language is auto-detected. For scanned PDFs, this sets the OCR language.",
+    )
+    if selected_language != "Auto-detect":
+        lang_info = SUPPORTED_LANGUAGES[selected_language]
+        st.caption(f"Script: {lang_info['script']} | OCR: `{lang_info['tesseract']}`")
 
 with col_info:
     st.info(
@@ -237,7 +249,8 @@ if uploaded_files:
             status_text.markdown(f"Processing **{file_label}**...")
 
             try:
-                record = extract_village(tmp_path, progress_callback=progress_cb)
+                record = extract_village(tmp_path, language=selected_language,
+                                        progress_callback=progress_cb)
 
                 # Use filename as fallback village name
                 if not record.get("village_name"):
