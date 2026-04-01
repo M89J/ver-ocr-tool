@@ -187,6 +187,42 @@ with st.sidebar:
         st.markdown("*No villages extracted yet*")
 
     st.divider()
+
+    # ── Import / Export ──────────────────────────────────────
+    st.markdown("**Data Backup**")
+    if st.session_state.extracted_data:
+        # Export
+        export_data = json.dumps(
+            [{k: v for k, v in r.items() if not k.startswith("_")} for r in st.session_state.extracted_data],
+            ensure_ascii=False, default=str,
+        )
+        st.download_button(
+            label="💾 Export Backup (JSON)",
+            data=export_data,
+            file_name=f"VER_backup_{datetime.now().strftime('%Y%m%d')}.json",
+            mime="application/json",
+            use_container_width=True,
+        )
+
+    # Import
+    imported_file = st.file_uploader("📂 Import Backup", type=["json"], help="Import a previously exported JSON backup to restore village data.")
+    if imported_file:
+        try:
+            imported_records = json.loads(imported_file.read().decode("utf-8"))
+            if isinstance(imported_records, list) and len(imported_records) > 0:
+                if st.button(f"Restore {len(imported_records)} village(s)", type="primary", use_container_width=True):
+                    delete_all_villages()
+                    for rec in imported_records:
+                        save_village(rec)
+                    st.session_state.extracted_data = load_all_villages()
+                    st.success(f"Restored {len(imported_records)} village(s)!")
+                    st.rerun()
+            else:
+                st.warning("Invalid backup file — expected a JSON list of village records.")
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            st.error("Could not read this file. Please use a valid JSON backup.")
+
+    st.divider()
     if st.session_state.extracted_data:
         if st.button("🗑️ Clear All Data", use_container_width=True):
             delete_all_villages()
@@ -433,6 +469,159 @@ if st.session_state.extracted_data:
             st_folium(m, width=None, height=500, use_container_width=True)
     elif len(records) > 0:
         st.info("No GPS coordinates found in extracted data. Map will appear when villages have latitude/longitude.")
+
+    # ── Charts & Visualization ──────────────────────────────
+    st.markdown("### Charts & Visualization")
+    chart_tabs = st.tabs(["🦋 Biodiversity", "🌍 Land Use", "👥 Demographics", "🌾 Agriculture"])
+
+    with chart_tabs[0]:  # Biodiversity
+        import plotly.graph_objects as go
+
+        village_names_chart = [r.get("village_name", f"Village {i+1}") for i, r in enumerate(records)]
+        bio_categories = [
+            ("Trees", "tree_diversity_count", "#2d6a4f"),
+            ("Shrubs", "shrub_diversity_count", "#52b788"),
+            ("Herbs & Grasses", "herb_grass_diversity_count", "#95d5b2"),
+            ("Mammals", "mammal_count", "#d4a373"),
+            ("Birds", "bird_count", "#e9c46a"),
+            ("Reptiles & Amphibians", "reptile_amphibian_count", "#e76f51"),
+            ("Butterflies", "butterfly_count", "#f4a261"),
+            ("Dragonflies", "dragonfly_count", "#264653"),
+        ]
+
+        fig = go.Figure()
+        for label, field, color in bio_categories:
+            values = [r.get(field, 0) for r in records]
+            if any(v > 0 for v in values):
+                fig.add_trace(go.Bar(name=label, x=village_names_chart, y=values, marker_color=color))
+
+        fig.update_layout(
+            barmode="stack",
+            title="Biodiversity Breakdown by Village",
+            xaxis_title="Village",
+            yaxis_title="Species Count",
+            height=450,
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            margin=dict(t=80, b=40),
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    with chart_tabs[1]:  # Land Use
+        import plotly.express as px
+
+        land_fields = [
+            ("Forest", "forest_land_pct"),
+            ("Grazing", "grazing_land_pct"),
+            ("Community Conserved", "community_conserved_area_pct"),
+            ("Agricultural", "agricultural_land_pct"),
+            ("Other", "other_land_pct"),
+        ]
+
+        if len(records) == 1:
+            # Pie chart for single village
+            rec = records[0]
+            pie_labels, pie_values = [], []
+            for label, field in land_fields:
+                val = rec.get(field, "")
+                try:
+                    num = float(str(val).replace("%", "").strip())
+                    if num > 0:
+                        pie_labels.append(label)
+                        pie_values.append(num)
+                except (ValueError, TypeError):
+                    pass
+            if pie_values:
+                fig = px.pie(names=pie_labels, values=pie_values,
+                             title=f"Land Use — {rec.get('village_name', 'Village')}",
+                             color_discrete_sequence=["#2d6a4f", "#95d5b2", "#b7e4c7", "#e9c46a", "#ccc"])
+                fig.update_layout(height=400)
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("No land use data available.")
+        else:
+            # Grouped bar for multiple villages
+            fig = go.Figure()
+            colors = ["#2d6a4f", "#95d5b2", "#b7e4c7", "#e9c46a", "#ccc"]
+            for (label, field), color in zip(land_fields, colors):
+                values = []
+                for r in records:
+                    val = r.get(field, "")
+                    try:
+                        values.append(float(str(val).replace("%", "").strip()))
+                    except (ValueError, TypeError):
+                        values.append(0)
+                if any(v > 0 for v in values):
+                    fig.add_trace(go.Bar(name=label, x=village_names_chart, y=values, marker_color=color))
+            fig.update_layout(
+                barmode="group",
+                title="Land Use Comparison (%)",
+                xaxis_title="Village", yaxis_title="Percentage",
+                height=450,
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                margin=dict(t=80, b=40),
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+    with chart_tabs[2]:  # Demographics
+        pop_data = []
+        for r in records:
+            name = r.get("village_name", "?")
+            try:
+                pop = int(r.get("total_population", 0) or 0)
+            except (ValueError, TypeError):
+                pop = 0
+            try:
+                hh = int(r.get("total_households", 0) or 0)
+            except (ValueError, TypeError):
+                hh = 0
+            pop_data.append({"Village": name, "Population": pop, "Households": hh})
+
+        if any(d["Population"] > 0 for d in pop_data):
+            df_pop = pd.DataFrame(pop_data)
+            fig = go.Figure()
+            fig.add_trace(go.Bar(name="Population", x=df_pop["Village"], y=df_pop["Population"], marker_color="#2d6a4f"))
+            fig.add_trace(go.Bar(name="Households", x=df_pop["Village"], y=df_pop["Households"], marker_color="#e9c46a"))
+            fig.update_layout(
+                barmode="group",
+                title="Population & Households",
+                xaxis_title="Village", yaxis_title="Count",
+                height=400,
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                margin=dict(t=80, b=40),
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No population data available.")
+
+    with chart_tabs[3]:  # Agriculture
+        crop_types = [
+            ("Kharif Crops", "kharif_crops", "#2d6a4f"),
+            ("Rabi Crops", "rabi_crops", "#e9c46a"),
+            ("Zaid Crops", "zaid_crops", "#e76f51"),
+        ]
+        has_crop_data = False
+        for r in records:
+            for _, field, _ in crop_types:
+                if r.get(field):
+                    has_crop_data = True
+                    break
+
+        if has_crop_data:
+            for r in records:
+                name = r.get("village_name", "Village")
+                st.markdown(f"**{name}**")
+                for label, field, color in crop_types:
+                    crops = r.get(field, "")
+                    if crops:
+                        st.markdown(f"- **{label}:** {crops[:300]}")
+            if any(r.get("traditional_crop_varieties") for r in records):
+                st.markdown("---")
+                st.markdown("**Traditional Varieties**")
+                for r in records:
+                    if r.get("traditional_crop_varieties"):
+                        st.markdown(f"- **{r.get('village_name', '?')}:** {r['traditional_crop_varieties'][:300]}")
+        else:
+            st.info("No agriculture data available.")
 
     # Download buttons
     st.markdown("### Download Master Sheet")
