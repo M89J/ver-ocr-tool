@@ -771,3 +771,329 @@ if st.session_state.extracted_data:
         with tabs[8]:  # All Fields
             all_data = [(k, str(v)[:200]) for k, v in rec.items() if v and v != 0]
             st.dataframe(pd.DataFrame(all_data, columns=["Field", "Value"]), use_container_width=True, height=600)
+
+    # ── Cross-Village Comparison ────────────────────────────
+    if len(records) >= 2:
+        st.divider()
+        st.markdown("### Cross-Village Comparison")
+
+        compare_names = [r.get("village_name", f"Village {i+1}") for i, r in enumerate(records)]
+        selected_compare = st.multiselect(
+            "Select villages to compare",
+            options=compare_names,
+            default=compare_names[:min(3, len(compare_names))],
+            help="Pick 2 or more villages for side-by-side comparison.",
+        )
+
+        if len(selected_compare) >= 2:
+            compare_records = [records[compare_names.index(n)] for n in selected_compare]
+            compare_aspect = st.radio(
+                "Compare by",
+                ["Overview", "Biodiversity", "Land Use", "Water & Livestock", "All Fields"],
+                horizontal=True,
+                key="compare_aspect",
+            )
+
+            if compare_aspect == "Overview":
+                rows = [
+                    ("State", "state"),
+                    ("Population", "total_population"),
+                    ("Households", "total_households"),
+                    ("Area (ha)", "total_area_ha"),
+                    ("Total Species", "total_species_count"),
+                    ("Livelihoods", "major_livelihoods"),
+                    ("GPS", None),
+                ]
+                table_data = {"Field": [r[0] for r in rows]}
+                for rec in compare_records:
+                    col_vals = []
+                    for label, field in rows:
+                        if field is None:
+                            col_vals.append(f"{rec.get('latitude', '')}, {rec.get('longitude', '')}")
+                        else:
+                            col_vals.append(str(rec.get(field, "") or ""))
+                    table_data[rec.get("village_name", "?")] = col_vals
+                st.dataframe(pd.DataFrame(table_data).set_index("Field"), use_container_width=True)
+
+            elif compare_aspect == "Biodiversity":
+                import plotly.graph_objects as go
+                bio_cats = [
+                    ("Trees", "tree_diversity_count"),
+                    ("Shrubs", "shrub_diversity_count"),
+                    ("Herbs", "herb_grass_diversity_count"),
+                    ("Mammals", "mammal_count"),
+                    ("Birds", "bird_count"),
+                    ("Reptiles", "reptile_amphibian_count"),
+                    ("Butterflies", "butterfly_count"),
+                    ("Dragonflies", "dragonfly_count"),
+                ]
+                fig = go.Figure()
+                colors = ["#2d6a4f", "#52b788", "#95d5b2", "#d4a373", "#e9c46a", "#e76f51", "#f4a261", "#264653"]
+                for rec in compare_records:
+                    name = rec.get("village_name", "?")
+                    values = [rec.get(f, 0) for _, f in bio_cats]
+                    fig.add_trace(go.Bar(name=name, x=[c[0] for c in bio_cats], y=values))
+                fig.update_layout(
+                    barmode="group", title="Biodiversity Comparison",
+                    yaxis_title="Species Count", height=450,
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+            elif compare_aspect == "Land Use":
+                rows = [
+                    ("Forest %", "forest_land_pct"),
+                    ("Grazing %", "grazing_land_pct"),
+                    ("Community Conserved %", "community_conserved_area_pct"),
+                    ("Agricultural %", "agricultural_land_pct"),
+                    ("Other %", "other_land_pct"),
+                    ("Total Area (ha)", "total_area_ha"),
+                ]
+                table_data = {"Field": [r[0] for r in rows]}
+                for rec in compare_records:
+                    table_data[rec.get("village_name", "?")] = [str(rec.get(f, "") or "") for _, f in rows]
+                st.dataframe(pd.DataFrame(table_data).set_index("Field"), use_container_width=True)
+
+            elif compare_aspect == "Water & Livestock":
+                rows = [
+                    ("Drinking Water", "drinking_water_sources"),
+                    ("Livestock Water", "livestock_water_sources"),
+                    ("Irrigation", "irrigation_sources"),
+                    ("Livestock Summary", "livestock_summary"),
+                    ("Indigenous Breeds", "indigenous_breeds"),
+                ]
+                table_data = {"Field": [r[0] for r in rows]}
+                for rec in compare_records:
+                    table_data[rec.get("village_name", "?")] = [str(rec.get(f, "") or "")[:150] for _, f in rows]
+                st.dataframe(pd.DataFrame(table_data).set_index("Field"), use_container_width=True)
+
+            elif compare_aspect == "All Fields":
+                all_fields = [k for k in MASTER_FIELDS.keys()]
+                table_data = {"Field": all_fields}
+                for rec in compare_records:
+                    table_data[rec.get("village_name", "?")] = [str(rec.get(f, "") or "")[:100] for f in all_fields]
+                df_compare = pd.DataFrame(table_data).set_index("Field")
+                # Only show rows where at least one village has data
+                df_compare = df_compare[df_compare.apply(lambda row: any(v.strip() and v.strip() != "0" for v in row), axis=1)]
+                st.dataframe(df_compare, use_container_width=True, height=600)
+        else:
+            st.caption("Select at least 2 villages to compare.")
+
+    # ── PDF Report Generation ───────────────────────────────
+    st.divider()
+    st.markdown("### Generate Report")
+
+    report_col1, report_col2 = st.columns([2, 1])
+    with report_col1:
+        report_villages = st.multiselect(
+            "Select villages for report",
+            options=[r.get("village_name", f"Village {i+1}") for i, r in enumerate(records)],
+            default=[records[0].get("village_name", "Village 1")] if records else [],
+            key="report_villages",
+        )
+    with report_col2:
+        report_format = st.radio("Format", ["Summary", "Detailed"], horizontal=True, key="report_format")
+
+    if report_villages and st.button("Generate Report", type="primary", use_container_width=True):
+        report_recs = [r for r in records if r.get("village_name") in report_villages]
+
+        report_lines = []
+        report_lines.append("=" * 60)
+        report_lines.append("VER DATA EXTRACTION REPORT")
+        report_lines.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+        report_lines.append(f"Villages: {len(report_recs)}")
+        report_lines.append("=" * 60)
+
+        for rec in report_recs:
+            name = rec.get("village_name", "Unknown")
+            report_lines.append("")
+            report_lines.append("-" * 60)
+            report_lines.append(f"VILLAGE: {name}")
+            report_lines.append("-" * 60)
+
+            # General
+            report_lines.append(f"  State: {rec.get('state', 'N/A')}")
+            report_lines.append(f"  Block: {rec.get('block', 'N/A')}")
+            report_lines.append(f"  GPS: {rec.get('latitude', 'N/A')}, {rec.get('longitude', 'N/A')}")
+            report_lines.append(f"  Survey Date: {rec.get('date_of_survey', 'N/A')}")
+            report_lines.append(f"  Total Area: {rec.get('total_area_ha', 'N/A')} ha")
+            report_lines.append(f"  Population: {rec.get('total_population', 'N/A')}")
+            report_lines.append(f"  Households: {rec.get('total_households', 'N/A')}")
+
+            # Land Use
+            report_lines.append("")
+            report_lines.append("  LAND USE:")
+            for label, field in [("Forest", "forest_land_pct"), ("Grazing", "grazing_land_pct"),
+                                  ("Community Conserved", "community_conserved_area_pct"),
+                                  ("Agricultural", "agricultural_land_pct"), ("Other", "other_land_pct")]:
+                val = rec.get(field, "")
+                if val:
+                    report_lines.append(f"    {label}: {val}%")
+
+            # Biodiversity
+            report_lines.append("")
+            report_lines.append(f"  BIODIVERSITY (Total Species: {rec.get('total_species_count', 0)}):")
+            for label, field in [("Trees", "tree_diversity_count"), ("Shrubs", "shrub_diversity_count"),
+                                  ("Herbs & Grasses", "herb_grass_diversity_count"), ("Mammals", "mammal_count"),
+                                  ("Birds", "bird_count"), ("Reptiles & Amphibians", "reptile_amphibian_count"),
+                                  ("Butterflies", "butterfly_count"), ("Dragonflies", "dragonfly_count")]:
+                val = rec.get(field, 0)
+                if val:
+                    report_lines.append(f"    {label}: {val}")
+
+            # Water & Livestock
+            report_lines.append("")
+            report_lines.append("  WATER SOURCES:")
+            if rec.get("drinking_water_sources"):
+                report_lines.append(f"    Drinking: {rec['drinking_water_sources']}")
+            if rec.get("livestock_water_sources"):
+                report_lines.append(f"    Livestock: {rec['livestock_water_sources']}")
+            if rec.get("irrigation_sources"):
+                report_lines.append(f"    Irrigation: {rec['irrigation_sources']}")
+
+            report_lines.append("")
+            report_lines.append("  LIVESTOCK:")
+            if rec.get("livestock_summary"):
+                report_lines.append(f"    Summary: {rec['livestock_summary']}")
+
+            if report_format == "Detailed":
+                # Agriculture
+                report_lines.append("")
+                report_lines.append("  AGRICULTURE:")
+                for label, field in [("Kharif Crops", "kharif_crops"), ("Rabi Crops", "rabi_crops"),
+                                      ("Zaid Crops", "zaid_crops"), ("Traditional Varieties", "traditional_crop_varieties"),
+                                      ("Soil Type", "soil_type"), ("Farming Practices", "farming_practices")]:
+                    val = rec.get(field, "")
+                    if val:
+                        report_lines.append(f"    {label}: {val[:200]}")
+
+                # Forest
+                report_lines.append("")
+                report_lines.append("  FOREST:")
+                for label, field in [("Name", "forest_name"), ("Type", "forest_type"),
+                                      ("Size", "forest_size_ha"), ("Location", "forest_location_geocode")]:
+                    val = rec.get(field, "")
+                    if val:
+                        report_lines.append(f"    {label}: {val[:200]}")
+
+                # Conservation
+                report_lines.append("")
+                report_lines.append("  CONSERVATION:")
+                for label, field in [("Sacred Groves", "sacred_groves"), ("Conservation Ethos", "conservation_ethos"),
+                                      ("Medicinal Plants", "medicinal_plants"), ("Protected Species", "protected_species")]:
+                    val = rec.get(field, "")
+                    if val:
+                        report_lines.append(f"    {label}: {val[:300]}")
+
+                # History
+                if rec.get("village_history_narrative"):
+                    report_lines.append("")
+                    report_lines.append("  VILLAGE HISTORY:")
+                    report_lines.append(f"    {rec['village_history_narrative'][:500]}")
+
+        # Summary stats
+        report_lines.append("")
+        report_lines.append("=" * 60)
+        report_lines.append("SUMMARY STATISTICS")
+        report_lines.append("=" * 60)
+        report_lines.append(f"  Total Villages: {len(report_recs)}")
+        report_lines.append(f"  Total Species: {sum(r.get('total_species_count', 0) for r in report_recs)}")
+        report_lines.append(f"  Total Population: {sum(int(r.get('total_population', 0) or 0) for r in report_recs)}")
+        states = set(r.get("state", "") for r in report_recs if r.get("state"))
+        report_lines.append(f"  States Covered: {', '.join(sorted(states)) if states else 'N/A'}")
+        report_lines.append("")
+        report_lines.append("--- End of Report ---")
+
+        report_text = "\n".join(report_lines)
+
+        st.text_area("Report Preview", report_text, height=400, disabled=True)
+        st.download_button(
+            label="📥 Download Report (.txt)",
+            data=report_text,
+            file_name=f"VER_Report_{datetime.now().strftime('%Y%m%d_%H%M')}.txt",
+            mime="text/plain",
+            use_container_width=True,
+        )
+
+    # ── AI-Powered Analysis ─────────────────────────────────
+    st.divider()
+    st.markdown("### AI-Powered Analysis")
+
+    ai_village_names = [r.get("village_name", f"Village {i+1}") for i, r in enumerate(records)]
+    ai_selected = st.selectbox("Select village for analysis", ai_village_names, key="ai_village")
+    ai_rec = records[ai_village_names.index(ai_selected)]
+
+    ai_type = st.radio(
+        "Analysis type",
+        ["Ecological Summary", "Conservation Priority", "Biodiversity Health", "Recommendations"],
+        horizontal=True,
+        key="ai_type",
+    )
+
+    # Build context for the AI prompt
+    def build_village_context(rec):
+        """Build a concise text summary of village data for AI analysis."""
+        parts = []
+        parts.append(f"Village: {rec.get('village_name', 'Unknown')}, State: {rec.get('state', 'N/A')}")
+        parts.append(f"Population: {rec.get('total_population', 'N/A')}, Households: {rec.get('total_households', 'N/A')}")
+        parts.append(f"Total Area: {rec.get('total_area_ha', 'N/A')} ha")
+        parts.append(f"Forest: {rec.get('forest_land_pct', 'N/A')}%, Agricultural: {rec.get('agricultural_land_pct', 'N/A')}%")
+        parts.append(f"Total Species: {rec.get('total_species_count', 0)}")
+        parts.append(f"Trees: {rec.get('tree_diversity_count', 0)}, Birds: {rec.get('bird_count', 0)}, Mammals: {rec.get('mammal_count', 0)}")
+        parts.append(f"Butterflies: {rec.get('butterfly_count', 0)}, Dragonflies: {rec.get('dragonfly_count', 0)}")
+        if rec.get("livestock_summary"):
+            parts.append(f"Livestock: {rec['livestock_summary']}")
+        if rec.get("drinking_water_sources"):
+            parts.append(f"Water Sources: {rec['drinking_water_sources']}")
+        if rec.get("conservation_ethos"):
+            parts.append(f"Conservation: {rec['conservation_ethos'][:300]}")
+        if rec.get("sacred_groves"):
+            parts.append(f"Sacred Groves: {rec['sacred_groves'][:200]}")
+        if rec.get("medicinal_plants"):
+            parts.append(f"Medicinal Plants: {rec['medicinal_plants'][:200]}")
+        if rec.get("invasive_plants"):
+            parts.append(f"Invasive Plants: {rec['invasive_plants'][:200]}")
+        if rec.get("forest_name"):
+            parts.append(f"Forest: {rec['forest_name']}, Size: {rec.get('forest_size_ha', 'N/A')}")
+        if rec.get("village_history_narrative"):
+            parts.append(f"History: {rec['village_history_narrative'][:300]}")
+        return "\n".join(parts)
+
+    ai_prompts = {
+        "Ecological Summary": "Provide a concise ecological summary of this village. Cover biodiversity richness, key habitats, water resources, and overall ecological significance. Keep it to 3-4 paragraphs.",
+        "Conservation Priority": "Assess the conservation priority of this village. Consider species diversity, forest coverage, sacred groves, traditional practices, and any threats. Classify as High/Medium/Low priority with justification.",
+        "Biodiversity Health": "Analyze the biodiversity health of this village. Comment on species counts across groups (trees, birds, mammals, butterflies), any notable patterns, potential indicator species, and overall ecosystem balance.",
+        "Recommendations": "Based on the village data, provide 5-7 specific, actionable conservation and sustainable development recommendations. Consider biodiversity, water resources, agriculture, livestock, and community practices.",
+    }
+
+    # Check for API key
+    api_key = st.text_input("Anthropic API Key", type="password", help="Enter your Anthropic API key to use Claude for analysis. Key is not stored.")
+
+    if st.button("Analyze", type="primary", use_container_width=True, key="ai_analyze"):
+        if not api_key:
+            st.warning("Please enter your Anthropic API key above.")
+        else:
+            village_context = build_village_context(ai_rec)
+            prompt = f"""You are an ecologist analyzing Village Ecological Register (VER) data from India.
+
+Village Data:
+{village_context}
+
+Task: {ai_prompts[ai_type]}"""
+
+            with st.spinner("Analyzing with Claude..."):
+                try:
+                    import anthropic
+                    client = anthropic.Anthropic(api_key=api_key)
+                    message = client.messages.create(
+                        model="claude-sonnet-4-20250514",
+                        max_tokens=1024,
+                        messages=[{"role": "user", "content": prompt}],
+                    )
+                    result = message.content[0].text
+                    st.markdown(f"**{ai_type} — {ai_rec.get('village_name', '')}**")
+                    st.markdown(result)
+                except ImportError:
+                    st.error("The `anthropic` package is not installed. Add it to requirements.txt or run: `pip install anthropic`")
+                except Exception as e:
+                    st.error(f"Analysis failed: {e}")
