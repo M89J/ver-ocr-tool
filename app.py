@@ -20,6 +20,9 @@ from collections import OrderedDict
 # Add ETL directory to path
 sys.path.insert(0, str(Path(__file__).parent))
 from comprehensive_extract import extract_village, get_empty_record, MASTER_FIELDS, SUPPORTED_LANGUAGES
+from db import save_village, load_all_villages, delete_village, delete_all_villages, get_village_count
+import folium
+from streamlit_folium import st_folium
 
 # ── Page config ──────────────────────────────────────────────
 st.set_page_config(
@@ -42,9 +45,9 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ── Session state ────────────────────────────────────────────
+# ── Session state (load from DB on first visit) ─────────────
 if "extracted_data" not in st.session_state:
-    st.session_state.extracted_data = []  # list of OrderedDicts
+    st.session_state.extracted_data = load_all_villages()
 if "processing" not in st.session_state:
     st.session_state.processing = False
 
@@ -186,6 +189,7 @@ with st.sidebar:
     st.divider()
     if st.session_state.extracted_data:
         if st.button("🗑️ Clear All Data", use_container_width=True):
+            delete_all_villages()
             st.session_state.extracted_data = []
             st.rerun()
 
@@ -257,6 +261,10 @@ if uploaded_files:
                     name_from_file = Path(file_label).stem.replace("VER_", "").replace("_", " ")
                     record["village_name"] = name_from_file.split(" ")[0]
 
+                # Save to database and add DB metadata
+                db_id = save_village(record)
+                record["_db_id"] = db_id
+                record["_created_at"] = datetime.now().isoformat()
                 st.session_state.extracted_data.append(record)
             except Exception as e:
                 st.error(f"Error processing {file_label}: {e}")
@@ -290,6 +298,97 @@ if st.session_state.extracted_data:
     with cols[4]:
         states = set(r.get("state", "") for r in records if r.get("state"))
         st.markdown(f'<div class="stat-card"><div class="stat-number">{len(states)}</div><div class="stat-label">States</div></div>', unsafe_allow_html=True)
+
+    # ── Interactive Map ──────────────────────────────────────
+    villages_with_coords = [r for r in records if r.get("latitude") and r.get("longitude")]
+
+    if villages_with_coords:
+        st.markdown("### Village Map")
+
+        # Calculate map center from average of all coordinates
+        lats = []
+        lons = []
+        for r in villages_with_coords:
+            try:
+                lats.append(float(r["latitude"]))
+                lons.append(float(r["longitude"]))
+            except (ValueError, TypeError):
+                continue
+
+        if lats and lons:
+            center_lat = sum(lats) / len(lats)
+            center_lon = sum(lons) / len(lons)
+
+            m = folium.Map(location=[center_lat, center_lon], zoom_start=6,
+                           tiles="OpenStreetMap")
+
+            # Color based on species count
+            def get_marker_color(species_count):
+                if species_count >= 200:
+                    return "darkgreen"
+                elif species_count >= 100:
+                    return "green"
+                elif species_count >= 50:
+                    return "orange"
+                else:
+                    return "red"
+
+            for r in villages_with_coords:
+                try:
+                    lat = float(r["latitude"])
+                    lon = float(r["longitude"])
+                except (ValueError, TypeError):
+                    continue
+
+                name = r.get("village_name", "Unknown")
+                state = r.get("state", "")
+                species = r.get("total_species_count", 0)
+                pop = r.get("total_population", "N/A")
+                area = r.get("total_area_ha", "N/A")
+                trees = r.get("tree_diversity_count", 0)
+                birds = r.get("bird_count", 0)
+                mammals = r.get("mammal_count", 0)
+
+                popup_html = f"""
+                <div style="font-family: sans-serif; min-width: 200px;">
+                    <h4 style="margin:0; color:#2d6a4f;">{name}</h4>
+                    <p style="margin:2px 0; color:#555;">{state}</p>
+                    <hr style="margin:4px 0;">
+                    <table style="font-size:12px;">
+                        <tr><td><b>Population</b></td><td>{pop}</td></tr>
+                        <tr><td><b>Area (ha)</b></td><td>{area}</td></tr>
+                        <tr><td><b>Total Species</b></td><td>{species}</td></tr>
+                        <tr><td><b>Trees</b></td><td>{trees}</td></tr>
+                        <tr><td><b>Birds</b></td><td>{birds}</td></tr>
+                        <tr><td><b>Mammals</b></td><td>{mammals}</td></tr>
+                    </table>
+                </div>
+                """
+
+                folium.Marker(
+                    location=[lat, lon],
+                    popup=folium.Popup(popup_html, max_width=300),
+                    tooltip=f"{name} ({species} species)",
+                    icon=folium.Icon(color=get_marker_color(species), icon="leaf", prefix="fa"),
+                ).add_to(m)
+
+            # Legend
+            legend_html = """
+            <div style="position:fixed; bottom:30px; left:30px; z-index:1000;
+                        background:white; padding:10px; border-radius:5px;
+                        border:1px solid #ccc; font-size:12px;">
+                <b>Species Count</b><br>
+                <i class="fa fa-leaf" style="color:darkgreen;"></i> 200+&nbsp;
+                <i class="fa fa-leaf" style="color:green;"></i> 100-199&nbsp;
+                <i class="fa fa-leaf" style="color:orange;"></i> 50-99&nbsp;
+                <i class="fa fa-leaf" style="color:red;"></i> &lt;50
+            </div>
+            """
+            m.get_root().html.add_child(folium.Element(legend_html))
+
+            st_folium(m, width=None, height=500, use_container_width=True)
+    elif len(records) > 0:
+        st.info("No GPS coordinates found in extracted data. Map will appear when villages have latitude/longitude.")
 
     # Download buttons
     st.markdown("### Download Master Sheet")

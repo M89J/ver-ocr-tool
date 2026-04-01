@@ -344,9 +344,9 @@ def find_section_ranges(pages: list[str]) -> dict:
                     r'पशुधन|ପଶୁ|పశువులు|கால்நடை|ಜಾನುವಾರು')),
         ("s6",  _sp("6",  r'6\.1\s+Availability.*Water|Waterscape',
                     r'जलक्षेत्र|ଜଳ|నీటి వనరులు|நீர்|ಜಲ')),
-        ("s7",  _sp("7",  r'7\.1\s+General\s+info|Forest\s+Land',
+        ("s7",  _sp("7",  r'7\.1\s+General\s+info|Forest\s+Lands',
                     r'वन भूमि|ଜଙ୍ଗଲ|అడవి భూమి|வன நிலங்கள்|ಅರಣ್ಯ')),
-        ("s8",  _sp("8",  r'8\.1\s+General\s+info|Grassland|Grazing',
+        ("s8",  _sp("8",  r'8\.1\s+General\s+info|Grassland\s*/\s*Grazing\s+land',
                     r'चरागाह|ଘାସ ଜମି|పచ్చిక|மேய்ச்சல்|ಹುಲ್ಲುಗಾವಲು')),
         ("s9",  _sp("9",  r'9\.1\s+General\s+info|Waste\s*[Ll]and|Revenue\s+Waste',
                     r'राजस्व बंजर|ରାଜସ୍ୱ ଜମି|రెవెన్యూ|கழிவு நிலம்|ಕಂದಾಯ')),
@@ -374,11 +374,11 @@ def find_section_ranges(pages: list[str]) -> dict:
                     r'वनस्पति और जीव|ଉଦ୍ଭିଦ ଓ ଜୀବଜନ୍ତୁ|వృక్షజాతి|தாவரங்கள்|ಸಸ್ಯ ಮತ್ತು ಪ್ರಾಣಿ')),
     ]
 
-    # Detect TOC pages: pages where 3+ section headers appear
+    # Detect TOC pages: pages where 3+ "Section - N" headers appear (generic pattern)
     toc_pages = set()
+    toc_pat = re.compile(r'Section\s*[-–—]\s*\d+', re.I)
     for i, text in enumerate(pages):
-        matches = sum(1 for _, pat in section_patterns if pat.search(text))
-        if matches >= 3:
+        if len(toc_pat.findall(text)) >= 3:
             toc_pages.add(i)
 
     sections = {}
@@ -424,15 +424,15 @@ def _extract_between(text: str, start_pat: str, end_pat: str) -> str:
 
 def parse_s2(text: str, record: dict):
     """Parse Section 2: General Information."""
-    # Village name
-    m = re.search(r'Village\s+Name:\s*(.+?)(?:\n|Village)', text, re.I)
+    # Village name — stop at "Village Council", "Village Institution", newline, or next field
+    m = re.search(r'Village\s+Name:\s*(.+?)(?:\s+Village\s+(?:Council|Institution)|(?:\n))', text, re.I)
     if m:
         record["village_name"] = _clean(m.group(1))
 
-    # State
-    m = re.search(r'State:\s*(.+?)(?:\n|Village)', text, re.I)
+    # State — stop at "Village" field label or newline
+    m = re.search(r'State:\s*(.+?)(?:\s+Village\s*\(|(?:\n))', text, re.I)
     if m:
-        record["state"] = _clean(m.group(1).split('Village')[0])
+        record["state"] = _clean(m.group(1))
 
     # Block
     m = re.search(r'Block:\s*(.+?)(?:\n|$)', text, re.I)
