@@ -21,8 +21,15 @@ from collections import OrderedDict
 sys.path.insert(0, str(Path(__file__).parent))
 from comprehensive_extract import extract_village, get_empty_record, MASTER_FIELDS, SUPPORTED_LANGUAGES
 from db import save_village, load_all_villages, delete_village, delete_all_villages, get_village_count
-import folium
-from streamlit_folium import st_folium
+import plotly.graph_objects as go
+import plotly.express as px
+
+try:
+    import folium
+    from streamlit_folium import st_folium
+    HAS_FOLIUM = True
+except ImportError:
+    HAS_FOLIUM = False
 
 # ── Page config ──────────────────────────────────────────────
 st.set_page_config(
@@ -364,11 +371,22 @@ if st.session_state.extracted_data:
     cols = st.columns(5)
     with cols[0]:
         st.markdown(f'<div class="stat-card"><div class="stat-number">{len(records)}</div><div class="stat-label">Villages</div></div>', unsafe_allow_html=True)
+    def _safe_int(val):
+        """Safely convert a value to int, extracting leading digits if needed."""
+        if isinstance(val, (int, float)):
+            return int(val)
+        try:
+            return int(str(val).strip())
+        except (ValueError, TypeError):
+            import re as _re
+            m = _re.match(r'(\d+)', str(val).strip())
+            return int(m.group(1)) if m else 0
+
     with cols[1]:
-        total_species = sum(r.get("total_species_count", 0) for r in records)
+        total_species = sum(_safe_int(r.get("total_species_count", 0)) for r in records)
         st.markdown(f'<div class="stat-card"><div class="stat-number">{total_species}</div><div class="stat-label">Total Species</div></div>', unsafe_allow_html=True)
     with cols[2]:
-        total_pop = sum(int(r.get("total_population", 0) or 0) for r in records)
+        total_pop = sum(_safe_int(r.get("total_population", 0)) for r in records)
         st.markdown(f'<div class="stat-card"><div class="stat-number">{total_pop:,}</div><div class="stat-label">Population</div></div>', unsafe_allow_html=True)
     with cols[3]:
         fields_filled = sum(sum(1 for v in r.values() if v and v != 0) for r in records)
@@ -382,7 +400,7 @@ if st.session_state.extracted_data:
     # ── Interactive Map ──────────────────────────────────────
     villages_with_coords = [r for r in records if r.get("latitude") and r.get("longitude")]
 
-    if villages_with_coords:
+    if villages_with_coords and HAS_FOLIUM:
         st.markdown("### Village Map")
 
         # Calculate map center from average of all coordinates
@@ -467,6 +485,8 @@ if st.session_state.extracted_data:
             m.get_root().html.add_child(folium.Element(legend_html))
 
             st_folium(m, width=None, height=500, use_container_width=True)
+    elif not HAS_FOLIUM and villages_with_coords:
+        st.info("Install `folium` and `streamlit-folium` to see the interactive map.")
     elif len(records) > 0:
         st.info("No GPS coordinates found in extracted data. Map will appear when villages have latitude/longitude.")
 
@@ -475,8 +495,6 @@ if st.session_state.extracted_data:
     chart_tabs = st.tabs(["🦋 Biodiversity", "🌍 Land Use", "👥 Demographics", "🌾 Agriculture"])
 
     with chart_tabs[0]:  # Biodiversity
-        import plotly.graph_objects as go
-
         village_names_chart = [r.get("village_name", f"Village {i+1}") for i, r in enumerate(records)]
         bio_categories = [
             ("Trees", "tree_diversity_count", "#2d6a4f"),
@@ -507,8 +525,6 @@ if st.session_state.extracted_data:
         st.plotly_chart(fig, use_container_width=True)
 
     with chart_tabs[1]:  # Land Use
-        import plotly.express as px
-
         land_fields = [
             ("Forest", "forest_land_pct"),
             ("Grazing", "grazing_land_pct"),
@@ -566,14 +582,8 @@ if st.session_state.extracted_data:
         pop_data = []
         for r in records:
             name = r.get("village_name", "?")
-            try:
-                pop = int(r.get("total_population", 0) or 0)
-            except (ValueError, TypeError):
-                pop = 0
-            try:
-                hh = int(r.get("total_households", 0) or 0)
-            except (ValueError, TypeError):
-                hh = 0
+            pop = _safe_int(r.get("total_population", 0))
+            hh = _safe_int(r.get("total_households", 0))
             pop_data.append({"Village": name, "Population": pop, "Households": hh})
 
         if any(d["Population"] > 0 for d in pop_data):
@@ -680,8 +690,9 @@ if st.session_state.extracted_data:
             "livestock_summary", "drinking_water_sources", "total_species_count",
             "tree_diversity_count", "bird_count", "mammal_count",
         ]
-        df = pd.DataFrame(records)[overview_cols]
-        st.dataframe(df, use_container_width=True, height=400)
+        df = pd.DataFrame(records)
+        available_cols = [c for c in overview_cols if c in df.columns]
+        st.dataframe(df[available_cols], use_container_width=True, height=400)
 
     else:
         selected = st.selectbox("Select Village", village_names)
@@ -816,7 +827,6 @@ if st.session_state.extracted_data:
                 st.dataframe(pd.DataFrame(table_data).set_index("Field"), use_container_width=True)
 
             elif compare_aspect == "Biodiversity":
-                import plotly.graph_objects as go
                 bio_cats = [
                     ("Trees", "tree_diversity_count"),
                     ("Shrubs", "shrub_diversity_count"),
@@ -998,7 +1008,7 @@ if st.session_state.extracted_data:
         report_lines.append("=" * 60)
         report_lines.append(f"  Total Villages: {len(report_recs)}")
         report_lines.append(f"  Total Species: {sum(r.get('total_species_count', 0) for r in report_recs)}")
-        report_lines.append(f"  Total Population: {sum(int(r.get('total_population', 0) or 0) for r in report_recs)}")
+        report_lines.append(f"  Total Population: {sum(_safe_int(r.get('total_population', 0)) for r in report_recs)}")
         states = set(r.get("state", "") for r in report_recs if r.get("state"))
         report_lines.append(f"  States Covered: {', '.join(sorted(states)) if states else 'N/A'}")
         report_lines.append("")
