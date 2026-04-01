@@ -8,9 +8,10 @@ Reference format: VER_Tsupfume_2025-26.pdf (English, Nagaland)
 """
 import re
 import json
-import fitz  # PyMuPDF
 from pathlib import Path
 from collections import OrderedDict
+
+import pdfplumber
 
 # ── Language configuration ────────────────────────────────────
 
@@ -216,30 +217,28 @@ def extract_text_from_pdf(pdf_path: str, language: str = "Auto-detect",
     Auto-detects whether PDF has native text or is scanned.
     Falls back to Tesseract OCR for scanned PDFs.
     """
-    doc = fitz.open(pdf_path)
+    # First pass: try native text extraction with pdfplumber
     pages = []
     text_pages = 0
 
-    # First pass: try native text extraction
-    for i in range(doc.page_count):
-        text = doc[i].get_text()
-        pages.append(text)
-        if len(text.strip()) > 50:
-            text_pages += 1
+    with pdfplumber.open(pdf_path) as pdf:
+        for i, page in enumerate(pdf.pages):
+            text = page.extract_text() or ""
+            pages.append(text)
+            if len(text.strip()) > 50:
+                text_pages += 1
 
     is_native = text_pages / len(pages) > 0.5 if pages else False
 
     if is_native:
-        doc.close()
         return pages, True
 
-    # Scanned PDF → use Tesseract OCR
+    # Scanned PDF → render to images with pdf2image, then OCR with Tesseract
     try:
         import pytesseract
+        from pdf2image import convert_from_path
         from PIL import Image
-        import io
     except ImportError:
-        doc.close()
         # Return whatever native text we got (partial)
         return pages, False
 
@@ -255,18 +254,22 @@ def extract_text_from_pdf(pdf_path: str, language: str = "Auto-detect",
     except ImportError:
         has_cv2 = False
 
-    pages = []  # Reset and OCR all pages
-    total = doc.page_count
+    # Convert PDF pages to images at 300 DPI
+    if progress_callback:
+        progress_callback(0, 1, f"Rendering PDF pages at 300 DPI...")
 
-    for i in range(total):
+    try:
+        images = convert_from_path(pdf_path, dpi=300)
+    except Exception as e:
+        # If pdf2image fails, return native text
+        return pages, False
+
+    pages = []
+    total = len(images)
+
+    for i, img in enumerate(images):
         if progress_callback and i % 10 == 0:
             progress_callback(i, total, f"OCR page {i+1}/{total} ({tess_lang})...")
-
-        page = doc[i]
-        # Render at 300 DPI for better OCR
-        pix = page.get_pixmap(dpi=300)
-        img_bytes = pix.tobytes("png")
-        img = Image.open(io.BytesIO(img_bytes))
 
         # Convert to grayscale
         if img.mode != "L":
@@ -293,7 +296,6 @@ def extract_text_from_pdf(pdf_path: str, language: str = "Auto-detect",
 
         pages.append(text)
 
-    doc.close()
     return pages, False
 
 

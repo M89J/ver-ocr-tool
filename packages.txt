@@ -7,3 +7,4 @@ tesseract-ocr-tel
 tesseract-ocr-kan
 tesseract-ocr-mar
 tesseract-ocr-guj
+poppler-utils
