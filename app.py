@@ -1076,12 +1076,15 @@ if st.session_state.extracted_data:
         "Recommendations": "Based on the village data, provide 5-7 specific, actionable conservation and sustainable development recommendations. Consider biodiversity, water resources, agriculture, livestock, and community practices.",
     }
 
-    # Check for API key
-    api_key = st.text_input("Anthropic API Key", type="password", help="Enter your Anthropic API key to use Claude for analysis. Key is not stored.")
+    # API key: check Streamlit secrets first, then ask user
+    api_key = st.secrets.get("GEMINI_API_KEY", "") if hasattr(st, "secrets") else ""
+    if not api_key:
+        api_key = st.text_input("Google Gemini API Key", type="password",
+                                help="Enter your Gemini API key (free from aistudio.google.com). Or add GEMINI_API_KEY to Streamlit secrets.")
 
     if st.button("Analyze", type="primary", use_container_width=True, key="ai_analyze"):
         if not api_key:
-            st.warning("Please enter your Anthropic API key above.")
+            st.warning("Please enter your Gemini API key above, or add `GEMINI_API_KEY` in Streamlit Cloud → Settings → Secrets.")
         else:
             village_context = build_village_context(ai_rec)
             prompt = f"""You are an ecologist analyzing Village Ecological Register (VER) data from India.
@@ -1091,19 +1094,16 @@ Village Data:
 
 Task: {ai_prompts[ai_type]}"""
 
-            with st.spinner("Analyzing with Claude..."):
+            with st.spinner("Analyzing with Gemini..."):
                 try:
-                    import anthropic
-                    client = anthropic.Anthropic(api_key=api_key)
-                    message = client.messages.create(
-                        model="claude-sonnet-4-20250514",
-                        max_tokens=1024,
-                        messages=[{"role": "user", "content": prompt}],
-                    )
-                    result = message.content[0].text
+                    import google.generativeai as genai
+                    genai.configure(api_key=api_key)
+                    model = genai.GenerativeModel("gemini-2.0-flash")
+                    response = model.generate_content(prompt)
+                    result = response.text
                     st.markdown(f"**{ai_type} — {ai_rec.get('village_name', '')}**")
                     st.markdown(result)
                 except ImportError:
-                    st.error("The `anthropic` package is not installed. Add it to requirements.txt or run: `pip install anthropic`")
+                    st.error("The `google-generativeai` package is not installed. Please check requirements.txt.")
                 except Exception as e:
                     st.error(f"Analysis failed: {e}")
