@@ -254,47 +254,50 @@ def extract_text_from_pdf(pdf_path: str, language: str = "Auto-detect",
     except ImportError:
         has_cv2 = False
 
-    # Convert PDF pages to images at 300 DPI
-    if progress_callback:
-        progress_callback(0, 1, f"Rendering PDF pages at 300 DPI...")
-
-    try:
-        images = convert_from_path(pdf_path, dpi=300)
-    except Exception as e:
-        # If pdf2image fails, return native text
-        return pages, False
-
+    # Process pages ONE AT A TIME to control memory (important for Cloud deployment)
+    # Use 200 DPI to balance quality vs memory/speed
     pages = []
-    total = len(images)
+    total = len(pdfplumber.open(pdf_path).pages)
 
-    for i, img in enumerate(images):
-        if progress_callback and i % 10 == 0:
+    for i in range(total):
+        if progress_callback and i % 5 == 0:
             progress_callback(i, total, f"OCR page {i+1}/{total} ({tess_lang})...")
 
-        # Convert to grayscale
-        if img.mode != "L":
-            img = img.convert("L")
-
-        # Apply enhancement if OpenCV available
-        if has_cv2:
-            img_array = np.array(img)
-            denoised = cv2.fastNlMeansDenoising(img_array, None, h=12,
-                                                 templateWindowSize=7, searchWindowSize=21)
-            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-            enhanced = clahe.apply(denoised)
-            binary = cv2.adaptiveThreshold(enhanced, 255,
-                                           cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                           cv2.THRESH_BINARY, blockSize=15, C=8)
-            img = Image.fromarray(binary)
-
-        # Run Tesseract
         try:
+            # Convert single page to image (memory-efficient)
+            images = convert_from_path(pdf_path, dpi=200,
+                                       first_page=i+1, last_page=i+1)
+            if not images:
+                pages.append("")
+                continue
+
+            img = images[0]
+
+            # Convert to grayscale
+            if img.mode != "L":
+                img = img.convert("L")
+
+            # Apply enhancement if OpenCV available
+            if has_cv2:
+                img_array = np.array(img)
+                denoised = cv2.fastNlMeansDenoising(img_array, None, h=10,
+                                                     templateWindowSize=7, searchWindowSize=21)
+                clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+                enhanced = clahe.apply(denoised)
+                binary = cv2.adaptiveThreshold(enhanced, 255,
+                                               cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                               cv2.THRESH_BINARY, blockSize=15, C=8)
+                img = Image.fromarray(binary)
+
+            # Run Tesseract
             text = pytesseract.image_to_string(img, lang=tess_lang,
                                                 config='--oem 3 --psm 6')
-        except Exception:
-            text = ""
+            pages.append(text)
 
-        pages.append(text)
+            # Free memory
+            del images, img
+        except Exception:
+            pages.append("")
 
     return pages, False
 
