@@ -34,6 +34,7 @@ MASTER_FIELDS = OrderedDict([
     ("total_area_ha", ""),
     ("forest_land_pct", ""),
     ("grazing_land_pct", ""),
+    ("revenue_wasteland_pct", ""),
     ("community_conserved_area_pct", ""),
     ("agricultural_land_pct", ""),
     ("other_land_pct", ""),
@@ -315,19 +316,35 @@ def parse_s2(text: str, record: dict):
                 record["latitude"] = lat
                 record["longitude"] = lon
 
-    # Total area
+    # Total area — handles both percentage format and hectare format
     m = re.search(r'(\d+(?:\.\d+)?)\s*ha\s*\n?\s*\(?\s*100%', text, re.I)
     if m:
         record["total_area_ha"] = m.group(1)
-        # Percentages after total
         after = text[m.end():]
         pcts = re.findall(r'(\d+)%|([Nn]il)', after[:200])
         pct_vals = [int(n) if n else 0 for n, nil in pcts]
-        fields = ["forest_land_pct", "grazing_land_pct", "community_conserved_area_pct",
-                  "agricultural_land_pct", "other_land_pct"]
+
+        # Detect column order: official format has "Revenue Wasteland" 3rd,
+        # Nagaland/NE format has "Community Conserved Area" 3rd
+        has_cca = bool(re.search(r'Community\s+Conserved', text, re.I))
+        has_rwl = bool(re.search(r'Revenue\s+Waste', text, re.I))
+
+        if has_cca:
+            fields = ["forest_land_pct", "grazing_land_pct", "community_conserved_area_pct",
+                      "agricultural_land_pct", "other_land_pct"]
+        else:
+            fields = ["forest_land_pct", "grazing_land_pct", "revenue_wasteland_pct",
+                      "agricultural_land_pct", "other_land_pct"]
+
         for i, f in enumerate(fields):
             if i < len(pct_vals):
                 record[f] = str(pct_vals[i]) + "%"
+
+    # Also try hectare-based format (official VER: "Forest Land (in ha)")
+    if not record["total_area_ha"]:
+        m = re.search(r'Total\s+Village\s+Area.*?(\d+(?:\.\d+)?)', text, re.I | re.DOTALL)
+        if m:
+            record["total_area_ha"] = m.group(1)
 
     # Other land details
     m = re.search(r'[Ii]f\s+others.*?specific:\s*(.+?)(?:\n\n|\n\d)', text, re.DOTALL)
