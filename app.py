@@ -279,8 +279,52 @@ if uploaded_files:
 if st.session_state.extracted_data:
     st.divider()
 
+    all_records = st.session_state.extracted_data
+
+    # ── Search & Filter ─────────────────────────────────────
+    st.markdown("### Search & Filter")
+    filter_col1, filter_col2, filter_col3 = st.columns([2, 1, 1])
+
+    with filter_col1:
+        search_query = st.text_input(
+            "Search villages",
+            placeholder="Search by village name, crop, species, livestock, water source...",
+            help="Searches across all text fields in the extracted data.",
+        )
+
+    with filter_col2:
+        all_states = sorted(set(r.get("state", "") for r in all_records if r.get("state")))
+        selected_states = st.multiselect("Filter by State", options=all_states, default=[])
+
+    with filter_col3:
+        species_counts = [r.get("total_species_count", 0) for r in all_records]
+        min_sp, max_sp = min(species_counts, default=0), max(species_counts, default=500)
+        if min_sp < max_sp:
+            species_range = st.slider("Species Count", min_value=min_sp, max_value=max_sp, value=(min_sp, max_sp))
+        else:
+            species_range = (min_sp, max_sp)
+
+    # Apply filters
+    records = all_records
+    if search_query:
+        query_lower = search_query.lower()
+        records = [
+            r for r in records
+            if any(query_lower in str(v).lower() for v in r.values())
+        ]
+    if selected_states:
+        records = [r for r in records if r.get("state", "") in selected_states]
+    if min_sp < max_sp:
+        records = [r for r in records if species_range[0] <= r.get("total_species_count", 0) <= species_range[1]]
+
+    if len(records) < len(all_records):
+        st.caption(f"Showing **{len(records)}** of {len(all_records)} villages")
+
+    if not records:
+        st.warning("No villages match your filters. Try adjusting your search or filters.")
+        st.stop()
+
     # Stats row
-    records = st.session_state.extracted_data
     cols = st.columns(5)
     with cols[0]:
         st.markdown(f'<div class="stat-card"><div class="stat-number">{len(records)}</div><div class="stat-label">Villages</div></div>', unsafe_allow_html=True)
