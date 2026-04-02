@@ -344,13 +344,10 @@ with tab_dashboard:
                 except (ValueError, TypeError):
                     continue
 
-            center_lat = sum(lats) / len(lats) if lats else 22.5
-            center_lon = sum(lons) / len(lons) if lons else 82.0
-            zoom = 6 if lats else 5
-
+            # Always show India extent on load
             m = folium.Map(
-                location=[center_lat, center_lon],
-                zoom_start=zoom, tiles="OpenStreetMap",
+                location=[22.5, 82.0],
+                zoom_start=5, tiles="OpenStreetMap",
                 min_zoom=4,
             )
 
