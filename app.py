@@ -111,6 +111,16 @@ if "processing" not in st.session_state:
 
 
 # ── Helper functions ────────────────────────────────────────
+def _display_clean(text):
+    """Clean text for display — fix broken Unicode arrows/symbols."""
+    import re as _re
+    s = str(text)
+    s = s.replace('↑', ' Up ').replace('↓', ' Down ').replace('↔', ' Stable ')
+    s = _re.sub(r'[\ufffd\u0000\u2400-\u243f]', '', s)
+    s = _re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', s)
+    return _re.sub(r'\s+', ' ', s).strip()
+
+
 def _safe_int(val):
     """Safely convert a value to int, extracting leading digits if needed."""
     if isinstance(val, (int, float)):
@@ -580,34 +590,34 @@ with tab_explore:
                     for f in ["village_history_narrative", "myths_and_beliefs", "traditional_songs"]:
                         if rec.get(f):
                             st.markdown(f"**{f.replace('_',' ').title()}**")
-                            st.text_area("", rec[f], height=150, key=f"det_h_{f}_{selected}", disabled=True)
+                            st.text_area("", _display_clean(rec[f]), height=150, key=f"det_h_{f}_{selected}", disabled=True)
 
                 with detail_tabs[2]:
                     for f in ["kharif_crops", "rabi_crops", "zaid_crops", "traditional_crop_varieties", "farming_practices",
                                "soil_type", "soil_fertility_change", "soil_fertility_reason", "pest_incidences", "major_weeds"]:
                         if rec.get(f):
-                            st.markdown(f"**{f.replace('_',' ').title()}:** {str(rec[f])[:300]}")
+                            st.markdown(f"**{f.replace('_',' ').title()}:** {_display_clean(rec[f])[:300]}")
 
                 with detail_tabs[3]:
                     if rec.get("livestock_summary"):
-                        st.markdown(f"**Summary:** {rec['livestock_summary']}")
+                        st.markdown(f"**Summary:** {_display_clean(rec['livestock_summary'])}")
                     if rec.get("livestock_detailed"):
-                        st.markdown(f"**Detailed:** {rec['livestock_detailed']}")
+                        st.markdown(f"**Detailed:** {_display_clean(rec['livestock_detailed'])}")
                     for f in ["indigenous_breeds", "livestock_diseases", "ethno_veterinary_practices"]:
                         if rec.get(f):
-                            st.text_area(f.replace("_"," ").title(), str(rec[f])[:500], height=100, key=f"det_l_{f}_{selected}", disabled=True)
+                            st.text_area(f.replace("_"," ").title(), _display_clean(rec[f])[:500], height=100, key=f"det_l_{f}_{selected}", disabled=True)
 
                 with detail_tabs[4]:
                     for f in ["drinking_water_sources", "livestock_water_sources", "irrigation_sources",
                                "water_quality_changes", "important_water_bodies"]:
                         if rec.get(f):
-                            st.markdown(f"**{f.replace('_',' ').title()}:** {str(rec[f])[:300]}")
+                            st.markdown(f"**{f.replace('_',' ').title()}:** {_display_clean(rec[f])[:300]}")
 
                 with detail_tabs[5]:
                     for f in ["forest_name", "forest_type", "forest_size_ha", "forest_location_geocode",
                                "forest_tree_species", "forest_shrub_species", "forest_herb_species", "forest_ntfp"]:
                         if rec.get(f):
-                            st.markdown(f"**{f.replace('_',' ').title()}:** {str(rec[f])[:300]}")
+                            st.markdown(f"**{f.replace('_',' ').title()}:** {_display_clean(rec[f])[:300]}")
 
                 with detail_tabs[6]:
                     st.markdown(f"**Total Species: {rec.get('total_species_count', 0)}**")
@@ -625,13 +635,13 @@ with tab_explore:
                         count = rec.get(count_f, 0)
                         if count:
                             with st.expander(f"{label} ({count})"):
-                                st.markdown(rec.get(list_f, ""))
+                                st.markdown(_display_clean(rec.get(list_f, "")))
 
                 with detail_tabs[7]:
                     for f in ["sacred_groves", "conservation_ethos", "bamboo_species", "medicinal_plants",
                                "invasive_plants", "protected_species", "feral_animals", "fire_incidence"]:
                         if rec.get(f):
-                            st.text_area(f.replace("_"," ").title(), str(rec[f])[:500], height=80, key=f"det_c_{f}_{selected}", disabled=True)
+                            st.text_area(f.replace("_"," ").title(), _display_clean(rec[f])[:500], height=80, key=f"det_c_{f}_{selected}", disabled=True)
 
                 with detail_tabs[8]:
                     all_data = [(k, str(v)[:200]) for k, v in rec.items() if v and v != 0 and not k.startswith("_")]

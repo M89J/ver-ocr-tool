@@ -412,7 +412,14 @@ def get_section_text(pages: list[str], sections: dict, key: str) -> str:
 # ── Section parsers ──────────────────────────────────────────
 
 def _clean(text: str) -> str:
-    """Clean extracted text: collapse whitespace, strip."""
+    """Clean extracted text: collapse whitespace, fix broken symbols, strip."""
+    # Replace broken arrow/trend symbols with readable text
+    text = text.replace('↑', ' Up ').replace('↓', ' Down ').replace('↔', ' Stable ')
+    # Remove other common broken Unicode symbols (replacement char, null, etc.)
+    text = re.sub(r'[\ufffd\u0000\u2400-\u243f]', '', text)
+    # Remove control characters except newline/tab
+    text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
+    # Collapse whitespace
     return re.sub(r'\s+', ' ', text).strip()
 
 
@@ -638,14 +645,16 @@ def parse_s5(text: str, record: dict):
             m = re.search(rf'{re.escape(short)}\s*\n?\s*(?:\([^)]*\)\s*\n?)?\s*(\d+|Nil)', s51_text, re.I)
             if m:
                 val = 0 if m.group(1).lower() == 'nil' else int(m.group(1))
-                # Get trends
+                # Get trends — map arrows to readable text
                 after = s51_text[m.end():m.end() + 150]
+                trend_map = {'↑': 'Up', '↓': 'Down', '↔': 'Stable'}
                 trends = re.findall(r'[↑↓↔]', after[:80])
-                trend_str = "/".join(trends[:3]) if trends else ""
+                trend_str = "/".join(trend_map.get(t, t) for t in trends[:3]) if trends else ""
 
                 if val > 0:
                     summary_parts.append(f"{short}:{val}")
-                detailed_parts.append(f"{short}:{val} [{trend_str}]")
+                if val > 0 or trend_str:
+                    detailed_parts.append(f"{short}:{val}" + (f" [{trend_str}]" if trend_str else ""))
 
     record["livestock_summary"] = "; ".join(summary_parts)
     record["livestock_detailed"] = "; ".join(detailed_parts)
