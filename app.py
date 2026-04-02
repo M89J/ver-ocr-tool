@@ -44,7 +44,7 @@ st.set_page_config(
 # ── Styling ─────────────────────────────────────────────────
 st.markdown("""
 <style>
-    .block-container { padding-top: 1rem !important; }
+    .block-container { padding-top: 2rem !important; }
     .portal-title {
         font-size: 1.5rem; font-weight: 700; color: #2d6a4f;
         margin: 0; line-height: 1.2;
@@ -985,7 +985,7 @@ Task: {ai_prompts[ai_type]}"""
                         try:
                             import google.generativeai as genai
                             genai.configure(api_key=api_key)
-                            model = genai.GenerativeModel("gemini-2.0-flash")
+                            model = genai.GenerativeModel("gemini-2.0-flash-lite")
                             response = model.generate_content(prompt)
                             st.markdown(f"**{ai_type} — {ai_rec.get('village_name','')}**")
                             st.markdown(response.text)
