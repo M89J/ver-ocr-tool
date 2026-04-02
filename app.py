@@ -115,10 +115,20 @@ def _display_clean(text):
     """Clean text for display — fix broken Unicode arrows/symbols."""
     import re as _re
     s = str(text)
+    # Replace arrow symbols with readable text
+    s = s.replace('\u2191', ' Up ').replace('\u2193', ' Down ').replace('\u2194', ' Stable ')
     s = s.replace('↑', ' Up ').replace('↓', ' Down ').replace('↔', ' Stable ')
-    s = _re.sub(r'[\ufffd\u0000\u2400-\u243f]', '', s)
-    s = _re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', s)
-    return _re.sub(r'\s+', ' ', s).strip()
+    # Remove common broken/banned Unicode symbols
+    s = _re.sub(r'[\ufffd\ufffe\uffff]', '', s)  # replacement chars
+    s = _re.sub(r'[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]', '', s)  # control chars
+    s = _re.sub(r'[\u2400-\u243f]', '', s)  # control pictures (look like banned icons)
+    s = _re.sub(r'[\u2300-\u23ff]', '', s)  # misc technical symbols
+    s = _re.sub(r'[\u2b00-\u2bff]', '', s)  # misc symbols and arrows
+    s = _re.sub(r'[\u25a0-\u25ff]', '', s)  # geometric shapes
+    s = _re.sub(r'[\u2600-\u26ff]', '', s)  # misc symbols (includes ⊘ ⛔ etc)
+    s = _re.sub(r'[\u2190-\u21ff]', lambda m: {'↑':' Up ','↓':' Down ','↔':' Stable ','→':' > ','←':' < '}.get(m.group(), ''), s)  # arrows block
+    s = _re.sub(r'\s+', ' ', s).strip()
+    return s
 
 
 def _safe_int(val):
@@ -312,88 +322,96 @@ with tab_dashboard:
     if HAS_FOLIUM:
         st.markdown('<div class="section-hdr">Village Map — India</div>', unsafe_allow_html=True)
 
-        # Center on villages if available, otherwise center on India
-        villages_with_coords = [r for r in records if r.get("latitude") and r.get("longitude")] if records else []
-        lats, lons = [], []
-        for r in villages_with_coords:
+        try:
+            # Center on villages if available, otherwise center on India
+            villages_with_coords = [r for r in records if r.get("latitude") and r.get("longitude")] if records else []
+            lats, lons = [], []
+            for r in villages_with_coords:
+                try:
+                    lats.append(float(r["latitude"]))
+                    lons.append(float(r["longitude"]))
+                except (ValueError, TypeError):
+                    continue
+
+            center_lat = sum(lats) / len(lats) if lats else 22.5
+            center_lon = sum(lons) / len(lons) if lons else 82.0
+            zoom = 6 if lats else 5
+
+            m = folium.Map(
+                location=[center_lat, center_lon],
+                zoom_start=zoom, tiles="OpenStreetMap",
+                min_zoom=4,
+            )
+
+            # India Country Boundary overlay
+            # Source: Survey of India via ESRI India Living Atlas (IAB_Country_2024)
             try:
-                lats.append(float(r["latitude"]))
-                lons.append(float(r["longitude"]))
-            except (ValueError, TypeError):
-                continue
+                india_geojson_path = Path(__file__).parent / "data" / "india_boundary.geojson"
+                if india_geojson_path.exists():
+                    with open(india_geojson_path, "r", encoding="utf-8") as _f:
+                        india_geojson = json.load(_f)
+                    folium.GeoJson(
+                        india_geojson,
+                        name="India Boundary (Survey of India)",
+                        style_function=lambda x: {
+                            "fillColor": "#d1fae5",
+                            "color": "#065f46",
+                            "weight": 2.5,
+                            "fillOpacity": 0.1,
+                        },
+                    ).add_to(m)
+            except Exception:
+                pass  # Boundary overlay is non-critical — map still works without it
 
-        center_lat = sum(lats) / len(lats) if lats else 22.5
-        center_lon = sum(lons) / len(lons) if lons else 82.0
-        zoom = 6 if lats else 5
+            # Village markers
+            for r in villages_with_coords:
+                try:
+                    lat, lon = float(r["latitude"]), float(r["longitude"])
+                except (ValueError, TypeError):
+                    continue
+                name = r.get("village_name", "Unknown")
+                species = r.get("total_species_count", 0)
+                pop = r.get("total_population", "N/A")
+                color = "darkgreen" if _safe_int(species) >= 200 else "green" if _safe_int(species) >= 100 else "orange" if _safe_int(species) >= 50 else "red"
+                popup_html = f"""
+                <div style="font-family:sans-serif;min-width:180px">
+                    <h4 style="margin:0;color:#2d6a4f">{name}</h4>
+                    <p style="margin:2px 0;color:#555">{r.get('state','')}</p>
+                    <hr style="margin:4px 0">
+                    <b>Population:</b> {pop}<br>
+                    <b>Species:</b> {species}<br>
+                    <b>Trees:</b> {r.get('tree_diversity_count',0)} |
+                    <b>Birds:</b> {r.get('bird_count',0)} |
+                    <b>Mammals:</b> {r.get('mammal_count',0)}
+                </div>"""
+                folium.Marker(
+                    location=[lat, lon],
+                    popup=folium.Popup(popup_html, max_width=300),
+                    tooltip=f"{name} ({species} spp)",
+                    icon=folium.Icon(color=color, icon="leaf", prefix="fa"),
+                ).add_to(m)
 
-        m = folium.Map(
-            location=[center_lat, center_lon],
-            zoom_start=zoom, tiles="OpenStreetMap",
-            min_zoom=4, max_bounds=True,
-        )
+            folium.LayerControl(collapsed=True).add_to(m)
 
-        # India Country Boundary overlay
-        # Source: Survey of India via ESRI India Living Atlas (IAB_Country_2024)
-        india_geojson_path = Path(__file__).parent / "data" / "india_boundary.geojson"
-        if india_geojson_path.exists():
-            with open(india_geojson_path, "r", encoding="utf-8") as _f:
-                india_geojson = json.load(_f)
-            folium.GeoJson(
-                india_geojson,
-                name="India Boundary (Survey of India)",
-                style_function=lambda x: {
-                    "fillColor": "#d1fae5",
-                    "color": "#065f46",
-                    "weight": 2.5,
-                    "fillOpacity": 0.1,
-                },
-            ).add_to(m)
-        folium.LayerControl(collapsed=True).add_to(m)
-
-        # Village markers
-        for r in villages_with_coords:
-            try:
-                lat, lon = float(r["latitude"]), float(r["longitude"])
-            except (ValueError, TypeError):
-                continue
-            name = r.get("village_name", "Unknown")
-            species = r.get("total_species_count", 0)
-            pop = r.get("total_population", "N/A")
-            color = "darkgreen" if _safe_int(species) >= 200 else "green" if _safe_int(species) >= 100 else "orange" if _safe_int(species) >= 50 else "red"
-            popup_html = f"""
-            <div style="font-family:sans-serif;min-width:180px">
-                <h4 style="margin:0;color:#2d6a4f">{name}</h4>
-                <p style="margin:2px 0;color:#555">{r.get('state','')}</p>
-                <hr style="margin:4px 0">
-                <b>Population:</b> {pop}<br>
-                <b>Species:</b> {species}<br>
-                <b>Trees:</b> {r.get('tree_diversity_count',0)} |
-                <b>Birds:</b> {r.get('bird_count',0)} |
-                <b>Mammals:</b> {r.get('mammal_count',0)}
+            # Legend
+            legend_html = """
+            <div style="position:fixed;bottom:30px;left:30px;z-index:1000;
+                        background:white;padding:8px 12px;border-radius:5px;
+                        border:1px solid #ccc;font-size:12px">
+                <b>Species Count</b><br>
+                <i class="fa fa-leaf" style="color:darkgreen"></i> 200+&nbsp;
+                <i class="fa fa-leaf" style="color:green"></i> 100+&nbsp;
+                <i class="fa fa-leaf" style="color:orange"></i> 50+&nbsp;
+                <i class="fa fa-leaf" style="color:red"></i> &lt;50
             </div>"""
-            folium.Marker(
-                location=[lat, lon],
-                popup=folium.Popup(popup_html, max_width=300),
-                tooltip=f"{name} ({species} spp)",
-                icon=folium.Icon(color=color, icon="leaf", prefix="fa"),
-            ).add_to(m)
+            m.get_root().html.add_child(folium.Element(legend_html))
+            st_folium(m, height=450, use_container_width=True, returned_objects=[])
 
-        # Legend
-        legend_html = """
-        <div style="position:fixed;bottom:30px;left:30px;z-index:1000;
-                    background:white;padding:8px 12px;border-radius:5px;
-                    border:1px solid #ccc;font-size:12px">
-            <b>Species Count</b><br>
-            <i class="fa fa-leaf" style="color:darkgreen"></i> 200+&nbsp;
-            <i class="fa fa-leaf" style="color:green"></i> 100+&nbsp;
-            <i class="fa fa-leaf" style="color:orange"></i> 50+&nbsp;
-            <i class="fa fa-leaf" style="color:red"></i> &lt;50
-        </div>"""
-        m.get_root().html.add_child(folium.Element(legend_html))
-        st_folium(m, height=450, use_container_width=True, returned_objects=[])
+            if not villages_with_coords:
+                st.caption("Upload VER PDFs in the **Manage Data** tab to see village markers on the map.")
 
-        if not villages_with_coords:
-            st.caption("Upload VER PDFs in the **Manage Data** tab to see village markers on the map.")
+        except Exception as e:
+            st.warning(f"Map could not be rendered: {e}")
 
     if not records:
         st.markdown("""
