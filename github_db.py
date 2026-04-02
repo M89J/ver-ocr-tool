@@ -157,14 +157,15 @@ def upsert_village(record: dict, github_token: str = "", github_repo: str = "") 
     name = record.get("village_name", "").strip()
     state = record.get("state", "").strip()
 
-    # Find existing record
+    # Find existing record by name (+ state if available)
     existing_idx = -1
-    if name and state:
+    if name:
         name_lower = name.lower()
-        state_lower = state.lower()
+        state_lower = state.lower() if state else ""
         for i, v in enumerate(db["villages"]):
-            if (v.get("village_name", "").strip().lower() == name_lower and
-                    v.get("state", "").strip().lower() == state_lower):
+            v_name = v.get("village_name", "").strip().lower()
+            v_state = v.get("state", "").strip().lower()
+            if v_name == name_lower and (not state_lower or not v_state or v_state == state_lower):
                 existing_idx = i
                 break
 

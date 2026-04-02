@@ -310,20 +310,17 @@ def extract_text_from_pdf(pdf_path: str, language: str = "Auto-detect",
     if is_native:
         return pages, True
 
-    # Scanned PDF → render to images with pdf2image, then OCR with Tesseract
+    # Mixed PDF → keep native text where available, OCR only blank pages
     try:
         import pytesseract
         from pdf2image import convert_from_path
         from PIL import Image
     except ImportError:
-        # Return whatever native text we got (partial)
         return pages, False
 
-    # Determine Tesseract language string
     lang_config = SUPPORTED_LANGUAGES.get(language, SUPPORTED_LANGUAGES["English"])
     tess_lang = lang_config["tesseract"]
 
-    # Try image preprocessing if OpenCV available
     try:
         import cv2
         import numpy as np
@@ -331,17 +328,21 @@ def extract_text_from_pdf(pdf_path: str, language: str = "Auto-detect",
     except ImportError:
         has_cv2 = False
 
-    # Process pages ONE AT A TIME to control memory (important for Cloud deployment)
-    # Use 200 DPI to balance quality vs memory/speed
+    # Keep native text pages, OCR only blank ones
+    native_pages = pages  # preserve native text from first pass
     pages = []
-    total = len(pdfplumber.open(pdf_path).pages)
+    total = len(native_pages)
 
     for i in range(total):
+        # Skip pages that already have native text (saves OCR time)
+        if len(native_pages[i].strip()) > 50:
+            pages.append(native_pages[i])
+            continue
+
         if progress_callback and i % 5 == 0:
             progress_callback(i, total, f"OCR page {i+1}/{total} ({tess_lang})...")
 
         try:
-            # Convert single page to image at 300 DPI (better for Indic scripts)
             images = convert_from_path(pdf_path, dpi=300,
                                        first_page=i+1, last_page=i+1)
             if not images:
@@ -561,7 +562,17 @@ def parse_s2(text: str, record: dict):
         record["latitude"] = round(lat, 6)
         record["longitude"] = round(lon, 6)
 
-    # GPS — Decimal format
+    # GPS — Latitude:/Longitude: format (NoteCam, smartphone apps)
+    if not record["latitude"]:
+        lat_m = re.search(r'Latitude\s*[:/]?\s*(\d{1,2}\.\d{3,})', text, re.I)
+        lon_m = re.search(r'Longitude\s*[:/]?\s*(\d{1,3}\.\d{3,})', text, re.I)
+        if lat_m and lon_m:
+            lat, lon = float(lat_m.group(1)), float(lon_m.group(1))
+            if 6 <= lat <= 38 and 68 <= lon <= 98:
+                record["latitude"] = round(lat, 6)
+                record["longitude"] = round(lon, 6)
+
+    # GPS — Decimal format (generic)
     if not record["latitude"]:
         coords = re.findall(r'(\d{1,3}\.\d{4,8})', text)
         if len(coords) >= 2:
@@ -1115,13 +1126,23 @@ def extract_village(pdf_path: str, language: str = "Auto-detect",
     if year_m:
         record["ver_year"] = year_m.group(1)
 
-    # Extract geotagged photos and use GPS as fallback for village coordinates
-    progress(9, 10, "Extracting geotagged photos...")
+    # GPS fallback: scan ALL pages for Latitude/Longitude text (NoteCam, smartphone watermarks)
+    if not record.get("latitude") or not record.get("longitude"):
+        all_text = "\n".join(pages)
+        lat_m = re.search(r'Latitude\s*[:/]?\s*(\d{1,2}\.\d{3,})', all_text, re.I)
+        lon_m = re.search(r'Longitude\s*[:/]?\s*(\d{1,3}\.\d{3,})', all_text, re.I)
+        if lat_m and lon_m:
+            lat, lon = float(lat_m.group(1)), float(lon_m.group(1))
+            if 6 <= lat <= 38 and 68 <= lon <= 98:
+                record["latitude"] = round(lat, 6)
+                record["longitude"] = round(lon, 6)
+
+    # Extract geotagged photos (EXIF GPS fallback)
+    progress(9, 10, "Checking photos...")
     try:
         geo_photos = extract_images_and_gps(pdf_path)
         if geo_photos:
             record["geotagged_photos"] = json.dumps(geo_photos)
-            # Use first geotagged photo's GPS as village coordinates if missing
             if not record.get("latitude") or not record.get("longitude"):
                 first_gps = geo_photos[0]
                 record["latitude"] = first_gps["lat"]
