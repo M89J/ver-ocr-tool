@@ -201,12 +201,87 @@ MASTER_FIELDS = OrderedDict([
     ("soil_macrofauna_count", 0),
     ("soil_macrofauna_diversity", ""),
     ("total_species_count", 0),
+
+    # ── Geotagged photos ──
+    ("geotagged_photos", ""),  # JSON string: [{page, lat, lon}]
 ])
 
 
 def get_empty_record():
     """Return a fresh empty record with all master fields."""
     return OrderedDict((k, v if isinstance(v, int) else "") for k, v in MASTER_FIELDS.items())
+
+
+# ── Geotagged photo extraction ─────────────────────────────
+
+def _exif_gps_to_decimal(gps_info: dict) -> tuple:
+    """Convert EXIF GPS data to decimal lat/lon. Returns (lat, lon) or (None, None)."""
+    try:
+        from PIL.ExifTags import GPSTAGS
+        gps = {}
+        for key, val in gps_info.items():
+            tag = GPSTAGS.get(key, key)
+            gps[tag] = val
+
+        def dms_to_decimal(dms, ref):
+            d, m, s = float(dms[0]), float(dms[1]), float(dms[2])
+            decimal = d + m / 60 + s / 3600
+            if ref in ('S', 'W'):
+                decimal = -decimal
+            return decimal
+
+        lat = dms_to_decimal(gps['GPSLatitude'], gps.get('GPSLatitudeRef', 'N'))
+        lon = dms_to_decimal(gps['GPSLongitude'], gps.get('GPSLongitudeRef', 'E'))
+
+        # Validate India bounds
+        if 6.0 <= lat <= 38.0 and 68.0 <= lon <= 98.0:
+            return round(lat, 6), round(lon, 6)
+    except (KeyError, TypeError, ValueError, ZeroDivisionError):
+        pass
+    return None, None
+
+
+def extract_images_and_gps(pdf_path: str) -> list[dict]:
+    """Extract embedded images from PDF and read EXIF GPS data.
+    Returns list of {page, lat, lon, has_gps} dicts.
+    """
+    from PIL import Image
+    from PIL.ExifTags import Base as ExifBase
+    import io
+
+    results = []
+    try:
+        with pdfplumber.open(pdf_path) as pdf:
+            for page_idx, page in enumerate(pdf.pages):
+                if not hasattr(page, 'images') or not page.images:
+                    continue
+                for img_meta in page.images:
+                    try:
+                        # pdfplumber stores image stream data
+                        stream = img_meta.get("stream")
+                        if stream is None:
+                            continue
+                        raw = stream.get_data()
+                        pil_img = Image.open(io.BytesIO(raw))
+                        exif = pil_img.getexif()
+                        if not exif:
+                            continue
+                        # GPS info is in IFD tag 0x8825
+                        gps_ifd = exif.get_ifd(0x8825)
+                        if gps_ifd:
+                            lat, lon = _exif_gps_to_decimal(gps_ifd)
+                            if lat is not None:
+                                results.append({
+                                    "page": page_idx + 1,
+                                    "lat": lat,
+                                    "lon": lon,
+                                    "has_gps": True,
+                                })
+                    except Exception:
+                        continue
+    except Exception:
+        pass
+    return results
 
 
 # ── PDF text extraction ──────────────────────────────────────
@@ -228,7 +303,8 @@ def extract_text_from_pdf(pdf_path: str, language: str = "Auto-detect",
             if len(text.strip()) > 50:
                 text_pages += 1
 
-    is_native = text_pages / len(pages) > 0.5 if pages else False
+    # Lower threshold: some PDFs mix native + scanned pages
+    is_native = text_pages / len(pages) > 0.3 if pages else False
 
     if is_native:
         return pages, True
@@ -264,8 +340,8 @@ def extract_text_from_pdf(pdf_path: str, language: str = "Auto-detect",
             progress_callback(i, total, f"OCR page {i+1}/{total} ({tess_lang})...")
 
         try:
-            # Convert single page to image (memory-efficient)
-            images = convert_from_path(pdf_path, dpi=200,
+            # Convert single page to image at 300 DPI (better for Indic scripts)
+            images = convert_from_path(pdf_path, dpi=300,
                                        first_page=i+1, last_page=i+1)
             if not images:
                 pages.append("")
@@ -280,18 +356,30 @@ def extract_text_from_pdf(pdf_path: str, language: str = "Auto-detect",
             # Apply enhancement if OpenCV available
             if has_cv2:
                 img_array = np.array(img)
+                # Denoise
                 denoised = cv2.fastNlMeansDenoising(img_array, None, h=10,
                                                      templateWindowSize=7, searchWindowSize=21)
+                # CLAHE for contrast
                 clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
                 enhanced = clahe.apply(denoised)
+                # Morphological cleanup: remove small noise, preserve text
+                kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
+                enhanced = cv2.morphologyEx(enhanced, cv2.MORPH_CLOSE, kernel)
+                # Adaptive threshold
                 binary = cv2.adaptiveThreshold(enhanced, 255,
                                                cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                                                cv2.THRESH_BINARY, blockSize=15, C=8)
                 img = Image.fromarray(binary)
 
-            # Run Tesseract
+            # Run Tesseract with PSM 6 (uniform block), fallback to PSM 4 (multi-column)
             text = pytesseract.image_to_string(img, lang=tess_lang,
                                                 config='--oem 3 --psm 6')
+            if len(text.strip()) < 30:
+                text_alt = pytesseract.image_to_string(img, lang=tess_lang,
+                                                        config='--oem 3 --psm 4')
+                if len(text_alt.strip()) > len(text.strip()):
+                    text = text_alt
+
             pages.append(text)
 
             # Free memory
@@ -1025,6 +1113,21 @@ def extract_village(pdf_path: str, language: str = "Auto-detect",
     year_m = re.search(r'(\d{4}[-–]\d{2,4})', str(pdf_path))
     if year_m:
         record["ver_year"] = year_m.group(1)
+
+    # Extract geotagged photos and use GPS as fallback for village coordinates
+    progress(9, 10, "Extracting geotagged photos...")
+    try:
+        geo_photos = extract_images_and_gps(pdf_path)
+        if geo_photos:
+            record["geotagged_photos"] = json.dumps(geo_photos)
+            # Use first geotagged photo's GPS as village coordinates if missing
+            if not record.get("latitude") or not record.get("longitude"):
+                first_gps = geo_photos[0]
+                record["latitude"] = first_gps["lat"]
+                record["longitude"] = first_gps["lon"]
+                record["extraction_method"] += "_gps_from_photo"
+    except Exception:
+        pass
 
     progress(10, 10, "Extraction complete!")
     return record

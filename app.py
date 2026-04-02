@@ -578,7 +578,8 @@ with tab_explore:
 
                 detail_tabs = st.tabs([
                     "\U0001f4cb General", "\U0001f4dc History", "\U0001f33e Agriculture", "\U0001f404 Livestock",
-                    "\U0001f4a7 Water", "\U0001f332 Forest", "\U0001f98b Biodiversity", "\U0001f33f Conservation", "\U0001f4ca All Fields"
+                    "\U0001f4a7 Water", "\U0001f332 Forest", "\U0001f98b Biodiversity", "\U0001f33f Conservation",
+                    "\U0001f4f7 Photos", "\U0001f4ca All Fields"
                 ])
 
                 with detail_tabs[0]:
@@ -656,6 +657,30 @@ with tab_explore:
                             st.text_area(f.replace("_"," ").title(), _display_clean(rec[f])[:500], height=80, key=f"det_c_{f}_{selected}", disabled=True)
 
                 with detail_tabs[8]:
+                    # Geotagged photos info
+                    geo_raw = rec.get("geotagged_photos", "")
+                    if geo_raw:
+                        try:
+                            geo_list = json.loads(geo_raw) if isinstance(geo_raw, str) else geo_raw
+                            st.markdown(f"**{len(geo_list)} geotagged photo(s) found**")
+                            for p in geo_list:
+                                st.markdown(f"- Page {p['page']}: **{p['lat']}, {p['lon']}**")
+                            # Show on mini map
+                            if HAS_FOLIUM:
+                                pm = folium.Map(location=[geo_list[0]['lat'], geo_list[0]['lon']], zoom_start=14)
+                                for p in geo_list:
+                                    folium.Marker(
+                                        location=[p['lat'], p['lon']],
+                                        tooltip=f"Page {p['page']}",
+                                        icon=folium.Icon(color="blue", icon="camera", prefix="fa"),
+                                    ).add_to(pm)
+                                st_folium(pm, height=300, use_container_width=True, returned_objects=[])
+                        except (json.JSONDecodeError, TypeError):
+                            st.info("No geotagged photos.")
+                    else:
+                        st.info("No geotagged photos extracted from this village's PDF.")
+
+                with detail_tabs[9]:
                     all_data = [(k, str(v)[:200]) for k, v in rec.items() if v and v != 0 and not k.startswith("_")]
                     st.dataframe(pd.DataFrame(all_data, columns=["Field", "Value"]), use_container_width=True, height=600, hide_index=True)
 
@@ -1003,7 +1028,7 @@ Task: {ai_prompts[ai_type]}"""
 # TAB 5: MANAGE DATA
 # ────────────────────────────────────────────────────────────
 with tab_manage:
-    manage_sub = st.tabs(["\U0001f4e4 Upload PDFs", "\U0001f4e5 Export Data", "\U0001f504 Backup & Sync"])
+    manage_sub = st.tabs(["\U0001f4e4 Upload PDFs", "\U0001f4d6 Preview PDF", "\U0001f4e5 Export Data", "\U0001f504 Backup & Sync"])
 
     # ── Upload ──
     with manage_sub[0]:
@@ -1068,8 +1093,41 @@ with tab_manage:
             st.divider()
             st.info(f"**{len(records)} village(s)** in the database. Data is append-only — uploading a PDF for an existing village will update its record.")
 
-    # ── Export ──
+    # ── Preview PDF ──
     with manage_sub[1]:
+        st.markdown('<div class="section-hdr">Preview PDF</div>', unsafe_allow_html=True)
+        preview_file = st.file_uploader("Upload a PDF to preview", type=["pdf"], key="preview_pdf")
+        if preview_file:
+            try:
+                from pdf2image import convert_from_path
+                import tempfile as _tmpfile
+                with _tmpfile.NamedTemporaryFile(suffix=".pdf", delete=False) as _tmp:
+                    _tmp.write(preview_file.read())
+                    _tmp_path = _tmp.name
+
+                max_pages = st.slider("Pages to preview", 1, 20, 5, key="preview_pages")
+                with st.spinner("Rendering pages..."):
+                    preview_images = convert_from_path(_tmp_path, dpi=150,
+                                                        first_page=1, last_page=max_pages)
+                for idx, img in enumerate(preview_images):
+                    st.image(img, caption=f"Page {idx + 1}", use_container_width=True)
+
+                # Extract and show geotagged photos
+                from comprehensive_extract import extract_images_and_gps
+                geo_photos = extract_images_and_gps(_tmp_path)
+                if geo_photos:
+                    st.markdown(f'<div class="section-hdr">Geotagged Photos Found: {len(geo_photos)}</div>', unsafe_allow_html=True)
+                    for p in geo_photos:
+                        st.markdown(f"- Page {p['page']}: **{p['lat']}, {p['lon']}**")
+                else:
+                    st.caption("No geotagged photos found in this PDF.")
+
+                os.unlink(_tmp_path)
+            except Exception as e:
+                st.error(f"Preview failed: {e}")
+
+    # ── Export ──
+    with manage_sub[2]:
         st.markdown('<div class="section-hdr">Export Data</div>', unsafe_allow_html=True)
         if not records:
             st.info("No data to export yet.")
@@ -1093,7 +1151,7 @@ with tab_manage:
                     file_name=f"VER_Master_{timestamp}.json", mime="application/json", use_container_width=True)
 
     # ── Backup & Sync ──
-    with manage_sub[2]:
+    with manage_sub[3]:
         st.markdown('<div class="section-hdr">Backup & Sync</div>', unsafe_allow_html=True)
 
         # JSON backup export
