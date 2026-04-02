@@ -322,20 +322,23 @@ with tab_dashboard:
             min_zoom=4, max_bounds=True,
         )
 
-        # India Administrative Boundary overlay (ESRI India Living Atlas / Survey of India)
-        # Uses esri-leaflet JS library to render ArcGIS dynamic MapServer
-        m.get_root().header.add_child(folium.Element(
-            '<script src="https://unpkg.com/esri-leaflet@3.0.12/dist/esri-leaflet.js"></script>'
-        ))
-        m.get_root().script.add_child(folium.Element(
-            f"""
-            L.esri.dynamicMapLayer({{
-                url: 'https://livingatlas.esri.in/server/rest/services/IAB2024/IAB_State_2024/MapServer',
-                opacity: 0.6,
-                attribution: 'Survey of India, ESRI India Living Atlas — IAB 2024'
-            }}).addTo({m.get_name()});
-            """
-        ))
+        # India Administrative Boundary overlay
+        # Source: Survey of India via ESRI India Living Atlas (IAB_State_2024)
+        india_geojson_path = Path(__file__).parent / "data" / "india_boundary.geojson"
+        if india_geojson_path.exists():
+            with open(india_geojson_path, "r", encoding="utf-8") as _f:
+                india_geojson = json.load(_f)
+            folium.GeoJson(
+                india_geojson,
+                name="India State Boundaries (SOI)",
+                style_function=lambda x: {
+                    "fillColor": "#d1fae5",
+                    "color": "#065f46",
+                    "weight": 2,
+                    "fillOpacity": 0.08,
+                },
+                tooltip=folium.GeoJsonTooltip(fields=["name"], aliases=["State:"], sticky=True),
+            ).add_to(m)
         folium.LayerControl(collapsed=True).add_to(m)
 
         # Village markers
