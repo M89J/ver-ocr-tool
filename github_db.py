@@ -2,6 +2,7 @@
 GitHub-backed JSON database for VER Data Portal.
 Stores village records in data/ver_database.json and syncs to GitHub
 so data persists across Streamlit Cloud redeployments.
+Data is append-only — no delete operations.
 """
 import json
 import base64
@@ -17,17 +18,17 @@ DB_FILE = Path(__file__).parent / "data" / "ver_database.json"
 def _read_db() -> dict:
     """Read the local JSON database file."""
     if not DB_FILE.exists():
-        return {"villages": [], "metadata": {"version": "1.0", "last_updated": ""}}
+        return {"villages": [], "metadata": {"version": "2.0", "last_updated": ""}}
     try:
         with open(DB_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
         if "villages" not in data:
             data["villages"] = []
         if "metadata" not in data:
-            data["metadata"] = {"version": "1.0", "last_updated": ""}
+            data["metadata"] = {"version": "2.0", "last_updated": ""}
         return data
     except (json.JSONDecodeError, IOError):
-        return {"villages": [], "metadata": {"version": "1.0", "last_updated": ""}}
+        return {"villages": [], "metadata": {"version": "2.0", "last_updated": ""}}
 
 
 def _write_db(data: dict):
@@ -46,12 +47,10 @@ def _push_to_github(token: str, repo: str):
     file_path = "data/ver_database.json"
     api_url = f"https://api.github.com/repos/{repo}/contents/{file_path}"
 
-    # Read current file content
     with open(DB_FILE, "r", encoding="utf-8") as f:
         content = f.read()
     content_b64 = base64.b64encode(content.encode("utf-8")).decode("utf-8")
 
-    # Get current file SHA (needed for update)
     sha = None
     req = urllib.request.Request(api_url, headers={
         "Authorization": f"Bearer {token}",
@@ -65,7 +64,6 @@ def _push_to_github(token: str, repo: str):
         if e.code != 404:
             return False, f"GitHub API error: {e.code}"
 
-    # Create or update file
     payload = {
         "message": f"Update VER database ({datetime.now().strftime('%Y-%m-%d %H:%M')})",
         "content": content_b64,
@@ -83,7 +81,6 @@ def _push_to_github(token: str, repo: str):
     try:
         with urllib.request.urlopen(req) as resp:
             if resp.status in (200, 201):
-                # Also push to master branch for Streamlit Cloud deployment
                 _sync_to_master(token, repo, file_path, content_b64)
                 return True, "Saved to GitHub"
     except urllib.error.HTTPError as e:
@@ -97,7 +94,6 @@ def _sync_to_master(token: str, repo: str, file_path: str, content_b64: str):
     """Sync the database file to master branch (Streamlit Cloud deploys from master)."""
     api_url = f"https://api.github.com/repos/{repo}/contents/{file_path}"
 
-    # Get SHA on master
     sha = None
     req = urllib.request.Request(f"{api_url}?ref=master", headers={
         "Authorization": f"Bearer {token}",
@@ -127,7 +123,7 @@ def _sync_to_master(token: str, repo: str, file_path: str, content_b64: str):
     try:
         urllib.request.urlopen(req)
     except urllib.error.HTTPError:
-        pass  # Non-critical: master sync is best-effort
+        pass
 
 
 # ── Public API ──────────────────────────────────────────────
@@ -138,43 +134,78 @@ def load_all_villages() -> list[dict]:
     return db.get("villages", [])
 
 
+def find_village(village_name: str, state: str) -> tuple[int, dict | None]:
+    """Find a village by name + state (case-insensitive). Returns (index, record) or (-1, None)."""
+    db = _read_db()
+    name_lower = village_name.strip().lower()
+    state_lower = state.strip().lower()
+    for i, v in enumerate(db["villages"]):
+        if (v.get("village_name", "").strip().lower() == name_lower and
+                v.get("state", "").strip().lower() == state_lower):
+            return i, v
+    return -1, None
+
+
+def upsert_village(record: dict, github_token: str = "", github_repo: str = "") -> tuple[str, bool]:
+    """Insert or update a village record. Returns (village_id, was_update).
+
+    Matching is by village_name + state (case-insensitive).
+    On update: merges new data into existing — prefers new non-empty values,
+    keeps old values where new is empty/0.
+    """
+    db = _read_db()
+    name = record.get("village_name", "").strip()
+    state = record.get("state", "").strip()
+
+    # Find existing record
+    existing_idx = -1
+    if name and state:
+        name_lower = name.lower()
+        state_lower = state.lower()
+        for i, v in enumerate(db["villages"]):
+            if (v.get("village_name", "").strip().lower() == name_lower and
+                    v.get("state", "").strip().lower() == state_lower):
+                existing_idx = i
+                break
+
+    if existing_idx >= 0:
+        # UPDATE — merge new into existing
+        existing = db["villages"][existing_idx]
+        merged = dict(existing)  # start with old values
+
+        for key, new_val in record.items():
+            if key.startswith("_"):
+                continue  # never overwrite internal fields
+            old_val = existing.get(key, "")
+            # Prefer new value if it's non-empty and non-zero
+            if new_val and new_val != 0:
+                merged[key] = new_val
+            # else keep old value (already in merged)
+
+        merged["_updated_at"] = datetime.now().isoformat()
+        db["villages"][existing_idx] = merged
+        vid = merged.get("_id", "")
+        was_update = True
+    else:
+        # INSERT — append new record
+        vid = f"v_{datetime.now().strftime('%Y%m%d%H%M%S')}_{len(db['villages']) + 1}"
+        record["_id"] = vid
+        record["_created_at"] = datetime.now().isoformat()
+        db["villages"].append(record)
+        was_update = False
+
+    _write_db(db)
+
+    if github_token and github_repo:
+        _push_to_github(github_token, github_repo)
+
+    return vid, was_update
+
+
 def save_village(record: dict, github_token: str = "", github_repo: str = "") -> str:
-    """Save a village record. Returns a unique ID for the record."""
-    db = _read_db()
-
-    # Generate a simple unique ID
-    vid = f"v_{datetime.now().strftime('%Y%m%d%H%M%S')}_{len(db['villages']) + 1}"
-    record["_id"] = vid
-    record["_created_at"] = datetime.now().isoformat()
-
-    db["villages"].append(record)
-    _write_db(db)
-
-    # Push to GitHub if configured
-    if github_token and github_repo:
-        _push_to_github(github_token, github_repo)
-
+    """Save a village record (uses upsert). Returns the village ID."""
+    vid, _ = upsert_village(record, github_token, github_repo)
     return vid
-
-
-def delete_village(village_id: str, github_token: str = "", github_repo: str = ""):
-    """Delete a village record by its ID."""
-    db = _read_db()
-    db["villages"] = [v for v in db["villages"] if v.get("_id") != village_id]
-    _write_db(db)
-
-    if github_token and github_repo:
-        _push_to_github(github_token, github_repo)
-
-
-def delete_all_villages(github_token: str = "", github_repo: str = ""):
-    """Delete all village records."""
-    db = _read_db()
-    db["villages"] = []
-    _write_db(db)
-
-    if github_token and github_repo:
-        _push_to_github(github_token, github_repo)
 
 
 def get_village_count() -> int:
@@ -184,19 +215,9 @@ def get_village_count() -> int:
 
 
 def import_villages(records: list[dict], github_token: str = "", github_repo: str = ""):
-    """Import a list of village records (replaces all existing data)."""
-    db = _read_db()
-    db["villages"] = []
-    for i, rec in enumerate(records):
-        if "_id" not in rec:
-            rec["_id"] = f"v_import_{datetime.now().strftime('%Y%m%d%H%M%S')}_{i+1}"
-        if "_created_at" not in rec:
-            rec["_created_at"] = datetime.now().isoformat()
-        db["villages"].append(rec)
-    _write_db(db)
-
-    if github_token and github_repo:
-        _push_to_github(github_token, github_repo)
+    """Import village records using upsert (no duplicates, no data loss)."""
+    for rec in records:
+        upsert_village(rec, github_token=github_token, github_repo=github_repo)
 
 
 def sync_to_github(github_token: str, github_repo: str) -> tuple[bool, str]:

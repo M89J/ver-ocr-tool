@@ -441,10 +441,20 @@ def parse_s2(text: str, record: dict):
     if m:
         record["state"] = _clean(m.group(1))
 
+    # District
+    m = re.search(r'(?:District|Jila|ଜିଲ୍ଲା|जिला|மாவட்டம்|జిల్లా|ಜಿಲ್ಲೆ|જિલ્લો)\s*[:/]?\s*(.+?)(?:\n|$)', text, re.I)
+    if m:
+        record["district"] = _clean(m.group(1))
+
     # Block
     m = re.search(r'Block:\s*(.+?)(?:\n|$)', text, re.I)
     if m:
         record["block"] = _clean(m.group(1))
+
+    # Gram Panchayat / Village Council
+    m = re.search(r'(?:Gram\s*Panchayat|Village\s*(?:Council|Institution)|ग्राम\s*पंचायत|ଗ୍ରାମ\s*ପଞ୍ଚାୟତ|கிராம\s*பஞ்சாயத்|గ్రామ\s*పంచాయతీ|ಗ್ರಾಮ\s*ಪಂಚಾಯತ|ग्रामपंचायत)\s*[:/]?\s*(.+?)(?:\n|$)', text, re.I)
+    if m:
+        record["gram_panchayat"] = _clean(m.group(1))
 
     # Date
     m = re.search(r'Date:\s*(.+?)(?:\n|$)', text, re.I)

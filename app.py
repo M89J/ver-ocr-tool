@@ -20,7 +20,7 @@ from collections import OrderedDict
 sys.path.insert(0, str(Path(__file__).parent))
 from comprehensive_extract import extract_village, get_empty_record, MASTER_FIELDS, SUPPORTED_LANGUAGES
 from github_db import (
-    load_all_villages, save_village, delete_village, delete_all_villages,
+    load_all_villages, upsert_village,
     import_villages, sync_to_github, get_village_count,
 )
 import plotly.graph_objects as go
@@ -130,6 +130,29 @@ def _safe_int(val):
         import re
         m = re.match(r'(\d+)', str(val).strip())
         return int(m.group(1)) if m else 0
+
+
+def admin_hierarchy_filter(records, key_prefix=""):
+    """Render cascading State > District > Block > Village dropdowns. Returns filtered list."""
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        all_states = sorted(set(r.get("state", "") for r in records if r.get("state")))
+        sel_state = st.selectbox("State", ["All"] + all_states, key=f"{key_prefix}_state")
+    state_recs = [r for r in records if r.get("state") == sel_state] if sel_state != "All" else records
+    with c2:
+        all_districts = sorted(set(r.get("district", "") for r in state_recs if r.get("district")))
+        sel_district = st.selectbox("District", ["All"] + all_districts, key=f"{key_prefix}_district")
+    dist_recs = [r for r in state_recs if r.get("district") == sel_district] if sel_district != "All" else state_recs
+    with c3:
+        all_blocks = sorted(set(r.get("block", "") for r in dist_recs if r.get("block")))
+        sel_block = st.selectbox("Block", ["All"] + all_blocks, key=f"{key_prefix}_block")
+    block_recs = [r for r in dist_recs if r.get("block") == sel_block] if sel_block != "All" else dist_recs
+    with c4:
+        all_villages = sorted(set(r.get("village_name", "") for r in block_recs if r.get("village_name")))
+        sel_village = st.selectbox("Village", ["All"] + all_villages, key=f"{key_prefix}_village")
+    if sel_village != "All":
+        return [r for r in block_recs if r.get("village_name") == sel_village]
+    return block_recs
 
 
 def generate_excel(records: list[dict]) -> bytes:
@@ -393,6 +416,12 @@ with tab_dashboard:
         </div>
         """, unsafe_allow_html=True)
     else:
+        # ── Admin Hierarchy Filter ──
+        st.markdown('<div class="section-hdr">Select Village</div>', unsafe_allow_html=True)
+        dash_records = admin_hierarchy_filter(records, key_prefix="dash")
+        if len(dash_records) < len(records):
+            st.caption(f"Showing **{len(dash_records)}** of {len(records)} villages")
+
         # ── Key Insights (two columns) ──
         dash_left, dash_right = st.columns(2)
 
@@ -400,7 +429,7 @@ with tab_dashboard:
             # ── Village Overview Table ──
             st.markdown('<div class="section-hdr">Village Overview</div>', unsafe_allow_html=True)
             overview_data = []
-            for rec in records:
+            for rec in dash_records:
                 overview_data.append({
                     "Village": rec.get("village_name", ""),
                     "State": rec.get("state", ""),
@@ -411,7 +440,7 @@ with tab_dashboard:
                     "Birds": _safe_int(rec.get("bird_count", 0)),
                     "Mammals": _safe_int(rec.get("mammal_count", 0)),
                 })
-            st.dataframe(pd.DataFrame(overview_data), use_container_width=True, hide_index=True, height=min(200 + len(records) * 35, 400))
+            st.dataframe(pd.DataFrame(overview_data), use_container_width=True, hide_index=True, height=min(200 + len(dash_records) * 35, 400))
 
         with dash_right:
             # ── Land Use Summary ──
@@ -419,8 +448,8 @@ with tab_dashboard:
             land_fields = [("Forest", "forest_land_pct"), ("Grazing", "grazing_land_pct"),
                            ("Community Conserved", "community_conserved_area_pct"),
                            ("Agricultural", "agricultural_land_pct"), ("Other", "other_land_pct")]
-            if len(records) == 1:
-                rec = records[0]
+            if len(dash_records) == 1:
+                rec = dash_records[0]
                 pie_labels, pie_values = [], []
                 for label, field in land_fields:
                     val = rec.get(field, "")
@@ -439,7 +468,7 @@ with tab_dashboard:
                 else:
                     st.info("No land use data available.")
             else:
-                for rec in records:
+                for rec in dash_records:
                     name = rec.get("village_name", "")
                     forest = rec.get("forest_land_pct", "")
                     agri = rec.get("agricultural_land_pct", "")
@@ -447,7 +476,7 @@ with tab_dashboard:
                     st.markdown(f"**{name}** — {area} ha | Forest: {forest}% | Agricultural: {agri}%")
 
         # ── Village History ──
-        histories = [(rec.get("village_name", ""), rec.get("village_history_narrative", "")) for rec in records]
+        histories = [(rec.get("village_name", ""), rec.get("village_history_narrative", "")) for rec in dash_records]
         histories = [(n, h) for n, h in histories if h and str(h).strip()]
         if histories:
             st.markdown('<div class="section-hdr">\U0001f4dc Village History</div>', unsafe_allow_html=True)
@@ -459,16 +488,14 @@ with tab_dashboard:
         st.markdown('<div class="section-hdr">Key Ecological Data</div>', unsafe_allow_html=True)
         eco_left, eco_right = st.columns(2)
         with eco_left:
-            # Water sources
-            water_data = [(rec.get("village_name", ""), rec.get("drinking_water_sources", "")) for rec in records]
+            water_data = [(rec.get("village_name", ""), rec.get("drinking_water_sources", "")) for rec in dash_records]
             water_data = [(n, w) for n, w in water_data if w and str(w).strip()]
             if water_data:
                 st.markdown("**\U0001f4a7 Water Sources**")
                 for name, water in water_data:
                     st.markdown(f"- **{name}:** {str(water)[:200]}")
 
-            # Livestock
-            livestock_data = [(rec.get("village_name", ""), rec.get("livestock_summary", "")) for rec in records]
+            livestock_data = [(rec.get("village_name", ""), rec.get("livestock_summary", "")) for rec in dash_records]
             livestock_data = [(n, l) for n, l in livestock_data if l and str(l).strip()]
             if livestock_data:
                 st.markdown("**\U0001f404 Livestock**")
@@ -477,15 +504,14 @@ with tab_dashboard:
 
         with eco_right:
             # Conservation
-            cons_data = [(rec.get("village_name", ""), rec.get("conservation_ethos", "")) for rec in records]
+            cons_data = [(rec.get("village_name", ""), rec.get("conservation_ethos", "")) for rec in dash_records]
             cons_data = [(n, c) for n, c in cons_data if c and str(c).strip()]
             if cons_data:
                 st.markdown("**\U0001f33f Conservation**")
                 for name, cons in cons_data:
                     st.markdown(f"- **{name}:** {str(cons)[:200]}")
 
-            # Sacred groves
-            grove_data = [(rec.get("village_name", ""), rec.get("sacred_groves", "")) for rec in records]
+            grove_data = [(rec.get("village_name", ""), rec.get("sacred_groves", "")) for rec in dash_records]
             grove_data = [(n, g) for n, g in grove_data if g and str(g).strip()]
             if grove_data:
                 st.markdown("**\U0001f333 Sacred Groves**")
@@ -500,29 +526,25 @@ with tab_explore:
     if not records:
         st.info("No village data loaded yet. Go to **Manage Data** tab to upload PDFs.")
     else:
-        # Search & Filter
-        st.markdown('<div class="section-hdr">Search & Filter</div>', unsafe_allow_html=True)
-        f1, f2, f3 = st.columns([2, 1, 1])
+        # Admin Hierarchy Filter
+        st.markdown('<div class="section-hdr">Navigate by Admin Hierarchy</div>', unsafe_allow_html=True)
+        filtered = admin_hierarchy_filter(records, key_prefix="explore")
+
+        # Additional filters
+        f1, f2 = st.columns([2, 1])
         with f1:
-            search_q = st.text_input("Search", placeholder="Village name, crop, species...", key="explore_search")
+            search_q = st.text_input("Search", placeholder="Crop, species, keyword...", key="explore_search")
         with f2:
-            all_states = sorted(set(r.get("state", "") for r in records if r.get("state")))
-            sel_states = st.multiselect("State", options=all_states, key="explore_states")
-        with f3:
-            sp_counts = [_safe_int(r.get("total_species_count", 0)) for r in records]
+            sp_counts = [_safe_int(r.get("total_species_count", 0)) for r in filtered]
             min_sp, max_sp = min(sp_counts, default=0), max(sp_counts, default=500)
             if min_sp < max_sp:
                 sp_range = st.slider("Species", min_value=min_sp, max_value=max_sp, value=(min_sp, max_sp), key="explore_sp")
             else:
                 sp_range = (min_sp, max_sp)
 
-        # Apply filters
-        filtered = records
         if search_q:
             q = search_q.lower()
             filtered = [r for r in filtered if any(q in str(v).lower() for v in r.values())]
-        if sel_states:
-            filtered = [r for r in filtered if r.get("state", "") in sel_states]
         if min_sp < max_sp:
             filtered = [r for r in filtered if sp_range[0] <= _safe_int(r.get("total_species_count", 0)) <= sp_range[1]]
 
@@ -1011,56 +1033,36 @@ with tab_manage:
                         progress_bar.progress(min(pct, 1.0), text=f"[{_idx+1}/{len(uploaded_files)}] {_label}: {msg}")
 
                     status_text.markdown(f"Processing **{file_label}**...")
+                    new_count, update_count = getattr(st.session_state, '_upload_new', 0), getattr(st.session_state, '_upload_update', 0)
                     try:
                         record = extract_village(tmp_path, language=selected_language, progress_callback=progress_cb)
                         if not record.get("village_name"):
                             name_from_file = Path(file_label).stem.replace("VER_","").replace("_"," ")
                             record["village_name"] = name_from_file.split(" ")[0]
 
-                        vid = save_village(record, github_token=GH_TOKEN, github_repo=GH_REPO)
-                        record["_id"] = vid
-                        record["_created_at"] = datetime.now().isoformat()
-                        st.session_state.extracted_data.append(record)
+                        vid, was_update = upsert_village(record, github_token=GH_TOKEN, github_repo=GH_REPO)
+                        if was_update:
+                            update_count += 1
+                        else:
+                            new_count += 1
                     except Exception as e:
                         st.error(f"Error processing {file_label}: {e}")
                     finally:
                         os.unlink(tmp_path)
 
                 progress_bar.progress(1.0, text="All PDFs processed!")
-                status_text.success(f"Extracted {len(uploaded_files)} PDF(s) successfully!")
-                if GH_TOKEN:
-                    status_text.success(f"Extracted {len(uploaded_files)} PDF(s) and saved to GitHub!")
+                # Reload from database to ensure session matches persistent store
+                st.session_state.extracted_data = load_all_villages()
+                parts = []
+                if new_count: parts.append(f"{new_count} new village(s)")
+                if update_count: parts.append(f"{update_count} updated village(s)")
+                status_text.success(f"Processed {len(uploaded_files)} PDF(s): {', '.join(parts) if parts else 'done'}")
                 st.rerun()
 
-        # Show current village count
+        # Show current database info
         if records:
             st.divider()
-            st.markdown(f"**{len(records)} village(s)** currently in the database.")
-
-            # Delete individual villages
-            del_names = [f"{r.get('village_name','?')} ({r.get('state','')})" for r in records]
-            del_sel = st.selectbox("Remove a village", ["-- Select --"] + del_names, key="del_sel")
-            if del_sel != "-- Select --":
-                idx = del_names.index(del_sel)
-                rec = records[idx]
-                if st.button(f"Delete {rec.get('village_name','')}", type="secondary"):
-                    delete_village(rec.get("_id", ""), github_token=GH_TOKEN, github_repo=GH_REPO)
-                    st.session_state.extracted_data.pop(idx)
-                    st.rerun()
-
-            st.divider()
-            st.markdown("**Danger Zone**")
-            confirm_text = st.text_input(
-                "Type **DELETE ALL** to clear all village data (this will also remove from GitHub):",
-                key="confirm_delete", placeholder="Type DELETE ALL to confirm",
-            )
-            if st.button("Clear All Data", type="secondary", use_container_width=True):
-                if confirm_text == "DELETE ALL":
-                    delete_all_villages(github_token=GH_TOKEN, github_repo=GH_REPO)
-                    st.session_state.extracted_data = []
-                    st.rerun()
-                else:
-                    st.warning("Type **DELETE ALL** in the box above to confirm.")
+            st.info(f"**{len(records)} village(s)** in the database. Data is append-only — uploading a PDF for an existing village will update its record.")
 
     # ── Export ──
     with manage_sub[1]:
