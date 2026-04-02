@@ -1049,10 +1049,18 @@ with tab_manage:
                     st.rerun()
 
             st.divider()
+            st.markdown("**Danger Zone**")
+            confirm_text = st.text_input(
+                "Type **DELETE ALL** to clear all village data (this will also remove from GitHub):",
+                key="confirm_delete", placeholder="Type DELETE ALL to confirm",
+            )
             if st.button("Clear All Data", type="secondary", use_container_width=True):
-                delete_all_villages(github_token=GH_TOKEN, github_repo=GH_REPO)
-                st.session_state.extracted_data = []
-                st.rerun()
+                if confirm_text == "DELETE ALL":
+                    delete_all_villages(github_token=GH_TOKEN, github_repo=GH_REPO)
+                    st.session_state.extracted_data = []
+                    st.rerun()
+                else:
+                    st.warning("Type **DELETE ALL** in the box above to confirm.")
 
     # ── Export ──
     with manage_sub[1]:
