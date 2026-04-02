@@ -44,7 +44,7 @@ st.set_page_config(
 # ── Styling ─────────────────────────────────────────────────
 st.markdown("""
 <style>
-    .block-container { padding-top: 3.5rem !important; }
+    .block-container { padding-top: 4rem !important; }
     .portal-title {
         font-size: 1.5rem; font-weight: 700; color: #2d6a4f;
         margin: 0; line-height: 1.2;
