@@ -268,13 +268,7 @@ records = st.session_state.extracted_data
 # Header
 st.markdown('<p class="portal-title">VER Data Portal</p><p class="portal-subtitle">Village Ecological Register — Insights Dashboard</p>', unsafe_allow_html=True)
 
-if records:
-    total_species = sum(_safe_int(r.get("total_species_count", 0)) for r in records)
-    total_pop = sum(_safe_int(r.get("total_population", 0)) for r in records)
-    states = set(r.get("state", "") for r in records if r.get("state"))
-    st.markdown(f'<div class="stat-row"><div class="stat-card"><div class="stat-number">{len(records)}</div><div class="stat-label">Villages</div></div><div class="stat-card"><div class="stat-number">{total_species}</div><div class="stat-label">Species</div></div><div class="stat-card"><div class="stat-number">{total_pop:,}</div><div class="stat-label">Population</div></div><div class="stat-card"><div class="stat-number">{len(states)}</div><div class="stat-label">States</div></div></div>', unsafe_allow_html=True)
-else:
-    st.markdown('<div class="stat-row"><div class="stat-card"><div class="stat-number">0</div><div class="stat-label">Villages</div></div><div class="stat-card"><div class="stat-number">0</div><div class="stat-label">Species</div></div><div class="stat-card"><div class="stat-number">0</div><div class="stat-label">Population</div></div><div class="stat-card"><div class="stat-number">0</div><div class="stat-label">States</div></div></div>', unsafe_allow_html=True)
+st.caption(f"{len(records)} village(s) in database" if records else "No villages yet")
 
 
 # ── Sidebar — minimal village list ──────────────────────────
@@ -419,8 +413,13 @@ with tab_dashboard:
         # ── Admin Hierarchy Filter ──
         st.markdown('<div class="section-hdr">Select Village</div>', unsafe_allow_html=True)
         dash_records = admin_hierarchy_filter(records, key_prefix="dash")
-        if len(dash_records) < len(records):
-            st.caption(f"Showing **{len(dash_records)}** of {len(records)} villages")
+
+        # ── Stat cards — reflect filtered selection ──
+        d_species = sum(_safe_int(r.get("total_species_count", 0)) for r in dash_records)
+        d_pop = sum(_safe_int(r.get("total_population", 0)) for r in dash_records)
+        d_states = set(r.get("state", "") for r in dash_records if r.get("state"))
+        d_area = sum(_safe_int(r.get("total_area_ha", 0)) for r in dash_records)
+        st.markdown(f'<div class="stat-row"><div class="stat-card"><div class="stat-number">{len(dash_records)}</div><div class="stat-label">Villages</div></div><div class="stat-card"><div class="stat-number">{d_species}</div><div class="stat-label">Species</div></div><div class="stat-card"><div class="stat-number">{d_pop:,}</div><div class="stat-label">Population</div></div><div class="stat-card"><div class="stat-number">{d_area}</div><div class="stat-label">Area (ha)</div></div><div class="stat-card"><div class="stat-number">{len(d_states)}</div><div class="stat-label">States</div></div></div>', unsafe_allow_html=True)
 
         # ── Key Insights (two columns) ──
         dash_left, dash_right = st.columns(2)
