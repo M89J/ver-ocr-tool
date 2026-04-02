@@ -298,6 +298,93 @@ tab_dashboard, tab_explore, tab_charts, tab_reports, tab_manage = st.tabs([
 # TAB 1: DASHBOARD
 # ────────────────────────────────────────────────────────────
 with tab_dashboard:
+    # ── India Map — always visible ──
+    if HAS_FOLIUM:
+        st.markdown('<div class="section-hdr">Village Map — India</div>', unsafe_allow_html=True)
+
+        # Center on villages if available, otherwise center on India
+        villages_with_coords = [r for r in records if r.get("latitude") and r.get("longitude")] if records else []
+        lats, lons = [], []
+        for r in villages_with_coords:
+            try:
+                lats.append(float(r["latitude"]))
+                lons.append(float(r["longitude"]))
+            except (ValueError, TypeError):
+                continue
+
+        center_lat = sum(lats) / len(lats) if lats else 22.5
+        center_lon = sum(lons) / len(lons) if lons else 82.0
+        zoom = 6 if lats else 5
+
+        m = folium.Map(
+            location=[center_lat, center_lon],
+            zoom_start=zoom, tiles="OpenStreetMap",
+            min_zoom=4, max_bounds=True,
+        )
+
+        # India boundary overlay (authenticated boundary as per Survey of India)
+        india_geojson_path = Path(__file__).parent / "data" / "india_boundary.geojson"
+        if india_geojson_path.exists():
+            with open(india_geojson_path, "r", encoding="utf-8") as f:
+                india_geojson = json.load(f)
+            folium.GeoJson(
+                india_geojson,
+                name="India Boundary",
+                style_function=lambda x: {
+                    "fillColor": "#d1fae5",
+                    "color": "#065f46",
+                    "weight": 2.5,
+                    "fillOpacity": 0.12,
+                    "dashArray": "",
+                },
+                tooltip="India",
+            ).add_to(m)
+
+        # Village markers
+        for r in villages_with_coords:
+            try:
+                lat, lon = float(r["latitude"]), float(r["longitude"])
+            except (ValueError, TypeError):
+                continue
+            name = r.get("village_name", "Unknown")
+            species = r.get("total_species_count", 0)
+            pop = r.get("total_population", "N/A")
+            color = "darkgreen" if _safe_int(species) >= 200 else "green" if _safe_int(species) >= 100 else "orange" if _safe_int(species) >= 50 else "red"
+            popup_html = f"""
+            <div style="font-family:sans-serif;min-width:180px">
+                <h4 style="margin:0;color:#2d6a4f">{name}</h4>
+                <p style="margin:2px 0;color:#555">{r.get('state','')}</p>
+                <hr style="margin:4px 0">
+                <b>Population:</b> {pop}<br>
+                <b>Species:</b> {species}<br>
+                <b>Trees:</b> {r.get('tree_diversity_count',0)} |
+                <b>Birds:</b> {r.get('bird_count',0)} |
+                <b>Mammals:</b> {r.get('mammal_count',0)}
+            </div>"""
+            folium.Marker(
+                location=[lat, lon],
+                popup=folium.Popup(popup_html, max_width=300),
+                tooltip=f"{name} ({species} spp)",
+                icon=folium.Icon(color=color, icon="leaf", prefix="fa"),
+            ).add_to(m)
+
+        # Legend
+        legend_html = """
+        <div style="position:fixed;bottom:30px;left:30px;z-index:1000;
+                    background:white;padding:8px 12px;border-radius:5px;
+                    border:1px solid #ccc;font-size:12px">
+            <b>Species Count</b><br>
+            <i class="fa fa-leaf" style="color:darkgreen"></i> 200+&nbsp;
+            <i class="fa fa-leaf" style="color:green"></i> 100+&nbsp;
+            <i class="fa fa-leaf" style="color:orange"></i> 50+&nbsp;
+            <i class="fa fa-leaf" style="color:red"></i> &lt;50
+        </div>"""
+        m.get_root().html.add_child(folium.Element(legend_html))
+        st_folium(m, height=450, use_container_width=True, returned_objects=[])
+
+        if not villages_with_coords:
+            st.caption("Upload VER PDFs in the **Manage Data** tab to see village markers on the map.")
+
     if not records:
         st.markdown("""
         <div class="welcome-card">
@@ -305,70 +392,11 @@ with tab_dashboard:
             <div class="welcome-text">
                 Upload Village Ecological Register PDFs to get started.<br>
                 Go to the <b>Manage Data</b> tab to upload your first PDF.<br><br>
-                Once data is loaded, this dashboard will show:<br>
-                Interactive village map, biodiversity highlights, and key insights.
+                The map above will show village locations once data is loaded.
             </div>
         </div>
         """, unsafe_allow_html=True)
     else:
-        # ── Map ──
-        villages_with_coords = [r for r in records if r.get("latitude") and r.get("longitude")]
-
-        if villages_with_coords and HAS_FOLIUM:
-            st.markdown('<div class="section-hdr">Village Map</div>', unsafe_allow_html=True)
-            lats, lons = [], []
-            for r in villages_with_coords:
-                try:
-                    lats.append(float(r["latitude"]))
-                    lons.append(float(r["longitude"]))
-                except (ValueError, TypeError):
-                    continue
-
-            if lats and lons:
-                m = folium.Map(
-                    location=[sum(lats)/len(lats), sum(lons)/len(lons)],
-                    zoom_start=6, tiles="OpenStreetMap",
-                )
-                for r in villages_with_coords:
-                    try:
-                        lat, lon = float(r["latitude"]), float(r["longitude"])
-                    except (ValueError, TypeError):
-                        continue
-                    name = r.get("village_name", "Unknown")
-                    species = r.get("total_species_count", 0)
-                    pop = r.get("total_population", "N/A")
-                    color = "darkgreen" if _safe_int(species) >= 200 else "green" if _safe_int(species) >= 100 else "orange" if _safe_int(species) >= 50 else "red"
-                    popup_html = f"""
-                    <div style="font-family:sans-serif;min-width:180px">
-                        <h4 style="margin:0;color:#2d6a4f">{name}</h4>
-                        <p style="margin:2px 0;color:#555">{r.get('state','')}</p>
-                        <hr style="margin:4px 0">
-                        <b>Population:</b> {pop}<br>
-                        <b>Species:</b> {species}<br>
-                        <b>Trees:</b> {r.get('tree_diversity_count',0)} |
-                        <b>Birds:</b> {r.get('bird_count',0)} |
-                        <b>Mammals:</b> {r.get('mammal_count',0)}
-                    </div>"""
-                    folium.Marker(
-                        location=[lat, lon],
-                        popup=folium.Popup(popup_html, max_width=300),
-                        tooltip=f"{name} ({species} spp)",
-                        icon=folium.Icon(color=color, icon="leaf", prefix="fa"),
-                    ).add_to(m)
-
-                legend_html = """
-                <div style="position:fixed;bottom:30px;left:30px;z-index:1000;
-                            background:white;padding:8px 12px;border-radius:5px;
-                            border:1px solid #ccc;font-size:12px">
-                    <b>Species</b><br>
-                    <i class="fa fa-leaf" style="color:darkgreen"></i> 200+&nbsp;
-                    <i class="fa fa-leaf" style="color:green"></i> 100+&nbsp;
-                    <i class="fa fa-leaf" style="color:orange"></i> 50+&nbsp;
-                    <i class="fa fa-leaf" style="color:red"></i> &lt;50
-                </div>"""
-                m.get_root().html.add_child(folium.Element(legend_html))
-                st_folium(m, height=420, use_container_width=True, returned_objects=[])
-
         # ── Biodiversity highlights ──
         st.markdown('<div class="section-hdr">Biodiversity Highlights</div>', unsafe_allow_html=True)
 
