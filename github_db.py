@@ -220,6 +220,91 @@ def import_villages(records: list[dict], github_token: str = "", github_repo: st
         upsert_village(rec, github_token=github_token, github_repo=github_repo)
 
 
+def upload_pdf_to_github(pdf_bytes: bytes, filename: str, github_token: str, github_repo: str) -> tuple[bool, str]:
+    """Upload a raw PDF to data/pdfs/ on GitHub. Returns (success, download_url)."""
+    if not github_token or not github_repo:
+        return False, "No GitHub token or repo configured"
+
+    # Sanitize filename
+    safe_name = "".join(c for c in filename if c.isalnum() or c in "._- ").strip()
+    file_path = f"data/pdfs/{safe_name}"
+    api_url = f"https://api.github.com/repos/{github_repo}/contents/{file_path}"
+
+    content_b64 = base64.b64encode(pdf_bytes).decode("utf-8")
+
+    # Check if file exists (get SHA)
+    sha = None
+    req = urllib.request.Request(api_url, headers={
+        "Authorization": f"Bearer {github_token}",
+        "Accept": "application/vnd.github.v3+json",
+    })
+    try:
+        with urllib.request.urlopen(req) as resp:
+            existing = json.loads(resp.read().decode("utf-8"))
+            sha = existing.get("sha")
+    except urllib.error.HTTPError:
+        pass
+
+    payload = {
+        "message": f"Upload VER PDF: {safe_name}",
+        "content": content_b64,
+        "branch": "main",
+    }
+    if sha:
+        payload["sha"] = sha
+
+    data_bytes = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(api_url, data=data_bytes, method="PUT", headers={
+        "Authorization": f"Bearer {github_token}",
+        "Accept": "application/vnd.github.v3+json",
+        "Content-Type": "application/json",
+    })
+    try:
+        with urllib.request.urlopen(req) as resp:
+            if resp.status in (200, 201):
+                result = json.loads(resp.read().decode("utf-8"))
+                download_url = result.get("content", {}).get("download_url", "")
+                # Also sync to master
+                _sync_file_to_master(github_token, github_repo, file_path, content_b64)
+                return True, download_url
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        return False, f"Upload failed ({e.code}): {body[:200]}"
+
+    return False, "Unknown error"
+
+
+def _sync_file_to_master(token: str, repo: str, file_path: str, content_b64: str):
+    """Sync any file to master branch."""
+    api_url = f"https://api.github.com/repos/{repo}/contents/{file_path}"
+    sha = None
+    req = urllib.request.Request(f"{api_url}?ref=master", headers={
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github.v3+json",
+    })
+    try:
+        with urllib.request.urlopen(req) as resp:
+            sha = json.loads(resp.read().decode("utf-8")).get("sha")
+    except urllib.error.HTTPError:
+        pass
+    payload = {"message": f"Sync PDF to master: {file_path}", "content": content_b64, "branch": "master"}
+    if sha:
+        payload["sha"] = sha
+    req = urllib.request.Request(api_url, data=json.dumps(payload).encode("utf-8"), method="PUT", headers={
+        "Authorization": f"Bearer {token}", "Accept": "application/vnd.github.v3+json", "Content-Type": "application/json",
+    })
+    try:
+        urllib.request.urlopen(req)
+    except urllib.error.HTTPError:
+        pass
+
+
+def get_pdf_download_url(filename: str, github_repo: str) -> str:
+    """Get the raw download URL for a stored PDF."""
+    safe_name = "".join(c for c in filename if c.isalnum() or c in "._- ").strip()
+    return f"https://raw.githubusercontent.com/{github_repo}/main/data/pdfs/{safe_name}"
+
+
 def sync_to_github(github_token: str, github_repo: str) -> tuple[bool, str]:
     """Manually trigger a sync to GitHub. Returns (success, message)."""
     return _push_to_github(github_token, github_repo)

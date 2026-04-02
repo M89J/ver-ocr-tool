@@ -59,6 +59,7 @@ MASTER_FIELDS = OrderedDict([
     ("date_of_survey", ""),
     ("ver_year", ""),
     ("total_pages", 0),
+    ("pdf_filename", ""),
     ("extraction_method", ""),
 
     # ── S2: General Info ──

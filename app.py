@@ -22,6 +22,7 @@ from comprehensive_extract import extract_village, get_empty_record, MASTER_FIEL
 from github_db import (
     load_all_villages, upsert_village,
     import_villages, sync_to_github, get_village_count,
+    upload_pdf_to_github, get_pdf_download_url,
 )
 import plotly.graph_objects as go
 import plotly.express as px
@@ -583,8 +584,13 @@ with tab_explore:
                 ])
 
                 with detail_tabs[0]:
-                    st.markdown(f"**{rec.get('village_name','')}** | {rec.get('state','')} | Block: {rec.get('block','')}")
+                    st.markdown(f"**{rec.get('village_name','')}** | {rec.get('state','')} | District: {rec.get('district','')} | Block: {rec.get('block','')}")
                     st.markdown(f"GPS: {rec.get('latitude','')}, {rec.get('longitude','')} | Survey: {rec.get('date_of_survey','')}")
+                    # Link to original PDF if stored
+                    pdf_fn = rec.get("pdf_filename", "")
+                    if pdf_fn and GH_REPO:
+                        pdf_url = get_pdf_download_url(pdf_fn, GH_REPO)
+                        st.markdown(f"[View Original PDF]({pdf_url})")
                     c1, c2 = st.columns(2)
                     with c1:
                         st.markdown("**Land Use**")
@@ -1028,7 +1034,7 @@ Task: {ai_prompts[ai_type]}"""
 # TAB 5: MANAGE DATA
 # ────────────────────────────────────────────────────────────
 with tab_manage:
-    manage_sub = st.tabs(["\U0001f4e4 Upload PDFs", "\U0001f4d6 Preview PDF", "\U0001f4e5 Export Data", "\U0001f504 Backup & Sync"])
+    manage_sub = st.tabs(["\U0001f4e4 Upload PDFs", "\U0001f4e5 Export Data", "\U0001f504 Backup & Sync"])
 
     # ── Upload ──
     with manage_sub[0]:
@@ -1069,6 +1075,15 @@ with tab_manage:
                             name_from_file = Path(file_label).stem.replace("VER_","").replace("_"," ")
                             record["village_name"] = name_from_file.split(" ")[0]
 
+                        # Store PDF filename in record
+                        record["pdf_filename"] = file_label
+
+                        # Upload raw PDF to GitHub for review
+                        if GH_TOKEN and GH_REPO:
+                            uploaded_file.seek(0)
+                            pdf_bytes = uploaded_file.read()
+                            upload_pdf_to_github(pdf_bytes, file_label, GH_TOKEN, GH_REPO)
+
                         vid, was_update = upsert_village(record, github_token=GH_TOKEN, github_repo=GH_REPO)
                         if was_update:
                             update_count += 1
@@ -1093,41 +1108,8 @@ with tab_manage:
             st.divider()
             st.info(f"**{len(records)} village(s)** in the database. Data is append-only — uploading a PDF for an existing village will update its record.")
 
-    # ── Preview PDF ──
-    with manage_sub[1]:
-        st.markdown('<div class="section-hdr">Preview PDF</div>', unsafe_allow_html=True)
-        preview_file = st.file_uploader("Upload a PDF to preview", type=["pdf"], key="preview_pdf")
-        if preview_file:
-            try:
-                from pdf2image import convert_from_path
-                import tempfile as _tmpfile
-                with _tmpfile.NamedTemporaryFile(suffix=".pdf", delete=False) as _tmp:
-                    _tmp.write(preview_file.read())
-                    _tmp_path = _tmp.name
-
-                max_pages = st.slider("Pages to preview", 1, 20, 5, key="preview_pages")
-                with st.spinner("Rendering pages..."):
-                    preview_images = convert_from_path(_tmp_path, dpi=150,
-                                                        first_page=1, last_page=max_pages)
-                for idx, img in enumerate(preview_images):
-                    st.image(img, caption=f"Page {idx + 1}", use_container_width=True)
-
-                # Extract and show geotagged photos
-                from comprehensive_extract import extract_images_and_gps
-                geo_photos = extract_images_and_gps(_tmp_path)
-                if geo_photos:
-                    st.markdown(f'<div class="section-hdr">Geotagged Photos Found: {len(geo_photos)}</div>', unsafe_allow_html=True)
-                    for p in geo_photos:
-                        st.markdown(f"- Page {p['page']}: **{p['lat']}, {p['lon']}**")
-                else:
-                    st.caption("No geotagged photos found in this PDF.")
-
-                os.unlink(_tmp_path)
-            except Exception as e:
-                st.error(f"Preview failed: {e}")
-
     # ── Export ──
-    with manage_sub[2]:
+    with manage_sub[1]:
         st.markdown('<div class="section-hdr">Export Data</div>', unsafe_allow_html=True)
         if not records:
             st.info("No data to export yet.")
@@ -1151,7 +1133,7 @@ with tab_manage:
                     file_name=f"VER_Master_{timestamp}.json", mime="application/json", use_container_width=True)
 
     # ── Backup & Sync ──
-    with manage_sub[3]:
+    with manage_sub[2]:
         st.markdown('<div class="section-hdr">Backup & Sync</div>', unsafe_allow_html=True)
 
         # JSON backup export

@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 .env
 *.pdf
+!data/pdfs/*.pdf
 *.xlsx
 *.csv
 .streamlit/secrets.toml
