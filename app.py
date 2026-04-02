@@ -44,20 +44,20 @@ st.set_page_config(
 # ── Styling ─────────────────────────────────────────────────
 st.markdown("""
 <style>
-    .block-container { padding-top: 2rem !important; }
+    .block-container { padding-top: 3.5rem !important; }
     .portal-title {
         font-size: 1.5rem; font-weight: 700; color: #2d6a4f;
         margin: 0; line-height: 1.2;
     }
     .portal-subtitle { font-size: 0.8rem; color: #666; margin: 0 0 0.3rem 0; }
-    .stat-row { display: flex; gap: 0.5rem; margin: 0.3rem 0 0.5rem 0; }
+    .stat-row { display: flex; gap: 0.5rem; margin: 0.3rem 0 0.5rem 0; flex-wrap: wrap; }
     .stat-card {
         background: linear-gradient(135deg, #f0fdf4, #dcfce7);
         border: 1px solid #bbf7d0; border-radius: 8px;
-        padding: 0.4rem 0.8rem; text-align: center; flex: 1;
+        padding: 0.4rem 0.6rem; text-align: center; flex: 1; min-width: 100px;
     }
-    .stat-number { font-size: 1.4rem; font-weight: 700; color: #166534; line-height: 1.3; }
-    .stat-label { font-size: 0.7rem; color: #555; text-transform: uppercase; letter-spacing: 0.5px; }
+    .stat-number { font-size: 1.3rem; font-weight: 700; color: #166534; line-height: 1.3; }
+    .stat-label { font-size: 0.65rem; color: #555; text-transform: uppercase; letter-spacing: 0.5px; }
     .stTabs [data-baseweb="tab-list"] { gap: 0; }
     .stTabs [data-baseweb="tab"] { padding: 0.5rem 1.25rem; font-weight: 600; }
     iframe { border: none !important; }
