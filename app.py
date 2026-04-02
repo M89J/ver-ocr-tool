@@ -322,22 +322,21 @@ with tab_dashboard:
             min_zoom=4, max_bounds=True,
         )
 
-        # India Administrative Boundary overlay
-        # Source: Survey of India via ESRI India Living Atlas (IAB_State_2024)
+        # India Country Boundary overlay
+        # Source: Survey of India via ESRI India Living Atlas (IAB_Country_2024)
         india_geojson_path = Path(__file__).parent / "data" / "india_boundary.geojson"
         if india_geojson_path.exists():
             with open(india_geojson_path, "r", encoding="utf-8") as _f:
                 india_geojson = json.load(_f)
             folium.GeoJson(
                 india_geojson,
-                name="India State Boundaries (SOI)",
+                name="India Boundary (Survey of India)",
                 style_function=lambda x: {
                     "fillColor": "#d1fae5",
                     "color": "#065f46",
-                    "weight": 2,
-                    "fillOpacity": 0.08,
+                    "weight": 2.5,
+                    "fillOpacity": 0.1,
                 },
-                tooltip=folium.GeoJsonTooltip(fields=["name"], aliases=["State:"], sticky=True),
             ).add_to(m)
         folium.LayerControl(collapsed=True).add_to(m)
 
