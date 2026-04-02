@@ -44,29 +44,35 @@ st.set_page_config(
 # ── Styling ─────────────────────────────────────────────────
 st.markdown("""
 <style>
-    /* Compact header */
-    .block-container { padding-top: 1rem !important; }
+    /* Remove Streamlit default top whitespace */
+    .block-container { padding-top: 0.5rem !important; }
+    header[data-testid="stHeader"] { height: 0; }
+    .stDeployButton { display: none; }
+    /* Header row */
+    .portal-header {
+        display: flex; align-items: center; justify-content: space-between;
+        padding: 0.25rem 0; margin-bottom: 0.25rem;
+    }
     .portal-title {
-        font-size: 1.6rem; font-weight: 700; color: #2d6a4f;
-        margin: 0; padding: 0; line-height: 1.2;
+        font-size: 1.5rem; font-weight: 700; color: #2d6a4f;
+        margin: 0; line-height: 1.2;
     }
     .portal-subtitle {
-        font-size: 0.85rem; color: #666; margin: 0 0 0.5rem 0;
+        font-size: 0.8rem; color: #666; margin: 0;
     }
     /* Stat cards */
-    .stat-row { display: flex; gap: 0.75rem; margin: 0.5rem 0 0.75rem 0; }
+    .stat-row { display: flex; gap: 0.5rem; margin: 0; }
     .stat-card {
         background: linear-gradient(135deg, #f0fdf4, #dcfce7);
         border: 1px solid #bbf7d0; border-radius: 8px;
-        padding: 0.5rem 1rem; text-align: center; flex: 1;
+        padding: 0.35rem 0.75rem; text-align: center; flex: 1;
     }
-    .stat-number { font-size: 1.5rem; font-weight: 700; color: #166534; }
-    .stat-label { font-size: 0.75rem; color: #555; text-transform: uppercase; letter-spacing: 0.5px; }
-    /* Remove extra padding from tabs */
+    .stat-number { font-size: 1.3rem; font-weight: 700; color: #166534; line-height: 1.3; }
+    .stat-label { font-size: 0.7rem; color: #555; text-transform: uppercase; letter-spacing: 0.5px; }
+    /* Reduce gap between header and tabs */
+    .stTabs { margin-top: -0.5rem; }
     .stTabs [data-baseweb="tab-list"] { gap: 0; }
-    .stTabs [data-baseweb="tab"] {
-        padding: 0.5rem 1.25rem; font-weight: 600;
-    }
+    .stTabs [data-baseweb="tab"] { padding: 0.5rem 1.25rem; font-weight: 600; }
     /* Tighter map rendering */
     iframe { border: none !important; }
     /* Welcome card */
@@ -88,6 +94,9 @@ st.markdown("""
         background: #f0fdf4; border: 1px solid #d1fae5; border-radius: 6px;
         padding: 0.3rem 0.6rem; margin: 0.2rem 0; font-size: 0.8rem;
     }
+    /* Reduce default Streamlit element gaps */
+    .element-container { margin-bottom: 0 !important; }
+    div[data-testid="column"] > div { padding: 0 !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -253,34 +262,36 @@ def build_village_context(rec):
 # ════════════════════════════════════════════════════════════
 records = st.session_state.extracted_data
 
-# Title row
-hdr_left, hdr_right = st.columns([3, 2])
-with hdr_left:
-    st.markdown('<p class="portal-title">VER Data Portal</p>', unsafe_allow_html=True)
-    st.markdown('<p class="portal-subtitle">Village Ecological Register — Insights Dashboard</p>', unsafe_allow_html=True)
+# Header — single HTML block to avoid Streamlit spacing gaps
+if records:
+    total_species = sum(_safe_int(r.get("total_species_count", 0)) for r in records)
+    total_pop = sum(_safe_int(r.get("total_population", 0)) for r in records)
+    states = set(r.get("state", "") for r in records if r.get("state"))
+    stats_html = f"""
+    <div class="stat-row">
+        <div class="stat-card"><div class="stat-number">{len(records)}</div><div class="stat-label">Villages</div></div>
+        <div class="stat-card"><div class="stat-number">{total_species}</div><div class="stat-label">Species</div></div>
+        <div class="stat-card"><div class="stat-number">{total_pop:,}</div><div class="stat-label">Population</div></div>
+        <div class="stat-card"><div class="stat-number">{len(states)}</div><div class="stat-label">States</div></div>
+    </div>"""
+else:
+    stats_html = """
+    <div class="stat-row">
+        <div class="stat-card"><div class="stat-number">0</div><div class="stat-label">Villages</div></div>
+        <div class="stat-card"><div class="stat-number">0</div><div class="stat-label">Species</div></div>
+        <div class="stat-card"><div class="stat-number">0</div><div class="stat-label">Population</div></div>
+        <div class="stat-card"><div class="stat-number">0</div><div class="stat-label">States</div></div>
+    </div>"""
 
-with hdr_right:
-    if records:
-        total_species = sum(_safe_int(r.get("total_species_count", 0)) for r in records)
-        total_pop = sum(_safe_int(r.get("total_population", 0)) for r in records)
-        states = set(r.get("state", "") for r in records if r.get("state"))
-        st.markdown(f"""
-        <div class="stat-row">
-            <div class="stat-card"><div class="stat-number">{len(records)}</div><div class="stat-label">Villages</div></div>
-            <div class="stat-card"><div class="stat-number">{total_species}</div><div class="stat-label">Species</div></div>
-            <div class="stat-card"><div class="stat-number">{total_pop:,}</div><div class="stat-label">Population</div></div>
-            <div class="stat-card"><div class="stat-number">{len(states)}</div><div class="stat-label">States</div></div>
-        </div>
-        """, unsafe_allow_html=True)
-    else:
-        st.markdown(f"""
-        <div class="stat-row">
-            <div class="stat-card"><div class="stat-number">0</div><div class="stat-label">Villages</div></div>
-            <div class="stat-card"><div class="stat-number">0</div><div class="stat-label">Species</div></div>
-            <div class="stat-card"><div class="stat-number">0</div><div class="stat-label">Population</div></div>
-            <div class="stat-card"><div class="stat-number">0</div><div class="stat-label">States</div></div>
-        </div>
-        """, unsafe_allow_html=True)
+st.markdown(f"""
+<div class="portal-header">
+    <div>
+        <p class="portal-title">VER Data Portal</p>
+        <p class="portal-subtitle">Village Ecological Register — Insights Dashboard</p>
+    </div>
+</div>
+{stats_html}
+""", unsafe_allow_html=True)
 
 
 # ── Sidebar — minimal village list ──────────────────────────
