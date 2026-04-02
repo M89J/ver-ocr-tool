@@ -417,9 +417,14 @@ with tab_dashboard:
         # ── Stat cards — reflect filtered selection ──
         d_species = sum(_safe_int(r.get("total_species_count", 0)) for r in dash_records)
         d_pop = sum(_safe_int(r.get("total_population", 0)) for r in dash_records)
-        d_states = set(r.get("state", "") for r in dash_records if r.get("state"))
+        d_states = len(set(r.get("state", "") for r in dash_records if r.get("state")))
         d_area = sum(_safe_int(r.get("total_area_ha", 0)) for r in dash_records)
-        st.markdown(f'<div class="stat-row"><div class="stat-card"><div class="stat-number">{len(dash_records)}</div><div class="stat-label">Villages</div></div><div class="stat-card"><div class="stat-number">{d_species}</div><div class="stat-label">Species</div></div><div class="stat-card"><div class="stat-number">{d_pop:,}</div><div class="stat-label">Population</div></div><div class="stat-card"><div class="stat-number">{d_area}</div><div class="stat-label">Area (ha)</div></div><div class="stat-card"><div class="stat-number">{len(d_states)}</div><div class="stat-label">States</div></div></div>', unsafe_allow_html=True)
+        mc1, mc2, mc3, mc4, mc5 = st.columns(5)
+        mc1.metric("Villages", len(dash_records))
+        mc2.metric("Species", d_species)
+        mc3.metric("Population", f"{d_pop:,}")
+        mc4.metric("Area (ha)", d_area)
+        mc5.metric("States", d_states)
 
         # ── Key Insights (two columns) ──
         dash_left, dash_right = st.columns(2)
