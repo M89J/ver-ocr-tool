@@ -290,7 +290,7 @@ with st.sidebar:
 # MAIN TABS
 # ════════════════════════════════════════════════════════════
 tab_dashboard, tab_explore, tab_charts, tab_reports, tab_manage = st.tabs([
-    "Dashboard", "Explore", "Charts", "Reports & AI", "Manage Data"
+    "\U0001f3e0 Dashboard", "\U0001f50d Explore", "\U0001f4ca Charts", "\U0001f4cb Reports & AI", "\U0001f4c2 Manage Data"
 ])
 
 
@@ -397,49 +397,104 @@ with tab_dashboard:
         </div>
         """, unsafe_allow_html=True)
     else:
-        # ── Biodiversity highlights ──
-        st.markdown('<div class="section-hdr">Biodiversity Highlights</div>', unsafe_allow_html=True)
+        # ── Key Insights (two columns) ──
+        dash_left, dash_right = st.columns(2)
 
-        bio_categories = [
-            ("Trees", "tree_diversity_count", "#2d6a4f"),
-            ("Shrubs", "shrub_diversity_count", "#52b788"),
-            ("Herbs", "herb_grass_diversity_count", "#95d5b2"),
-            ("Mammals", "mammal_count", "#d4a373"),
-            ("Birds", "bird_count", "#e9c46a"),
-            ("Reptiles", "reptile_amphibian_count", "#e76f51"),
-            ("Butterflies", "butterfly_count", "#f4a261"),
-            ("Dragonflies", "dragonfly_count", "#264653"),
-        ]
+        with dash_left:
+            # ── Village Overview Table ──
+            st.markdown('<div class="section-hdr">Village Overview</div>', unsafe_allow_html=True)
+            overview_data = []
+            for rec in records:
+                overview_data.append({
+                    "Village": rec.get("village_name", ""),
+                    "State": rec.get("state", ""),
+                    "Population": _safe_int(rec.get("total_population", 0)),
+                    "Area (ha)": rec.get("total_area_ha", ""),
+                    "Species": _safe_int(rec.get("total_species_count", 0)),
+                    "Trees": _safe_int(rec.get("tree_diversity_count", 0)),
+                    "Birds": _safe_int(rec.get("bird_count", 0)),
+                    "Mammals": _safe_int(rec.get("mammal_count", 0)),
+                })
+            st.dataframe(pd.DataFrame(overview_data), use_container_width=True, hide_index=True, height=min(200 + len(records) * 35, 400))
 
-        village_names_chart = [r.get("village_name", f"V{i+1}") for i, r in enumerate(records)]
-        fig = go.Figure()
-        for label, field, color in bio_categories:
-            values = [_safe_int(r.get(field, 0)) for r in records]
-            if any(v > 0 for v in values):
-                fig.add_trace(go.Bar(name=label, x=village_names_chart, y=values, marker_color=color))
-        fig.update_layout(
-            barmode="stack", title=None,
-            xaxis_title="Village", yaxis_title="Species Count",
-            height=380, margin=dict(t=20, b=40, l=40, r=20),
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        )
-        st.plotly_chart(fig, use_container_width=True)
+        with dash_right:
+            # ── Land Use Summary ──
+            st.markdown('<div class="section-hdr">Land Use Summary</div>', unsafe_allow_html=True)
+            land_fields = [("Forest", "forest_land_pct"), ("Grazing", "grazing_land_pct"),
+                           ("Community Conserved", "community_conserved_area_pct"),
+                           ("Agricultural", "agricultural_land_pct"), ("Other", "other_land_pct")]
+            if len(records) == 1:
+                rec = records[0]
+                pie_labels, pie_values = [], []
+                for label, field in land_fields:
+                    val = rec.get(field, "")
+                    try:
+                        num = float(str(val).replace("%", "").strip())
+                        if num > 0:
+                            pie_labels.append(label)
+                            pie_values.append(num)
+                    except (ValueError, TypeError):
+                        pass
+                if pie_values:
+                    fig = px.pie(names=pie_labels, values=pie_values,
+                                 color_discrete_sequence=["#2d6a4f", "#95d5b2", "#b7e4c7", "#e9c46a", "#ccc"])
+                    fig.update_layout(height=300, margin=dict(t=10, b=10, l=10, r=10), showlegend=True)
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.info("No land use data available.")
+            else:
+                for rec in records:
+                    name = rec.get("village_name", "")
+                    forest = rec.get("forest_land_pct", "")
+                    agri = rec.get("agricultural_land_pct", "")
+                    area = rec.get("total_area_ha", "")
+                    st.markdown(f"**{name}** — {area} ha | Forest: {forest}% | Agricultural: {agri}%")
 
-        # ── Village overview table ──
-        st.markdown('<div class="section-hdr">Village Overview</div>', unsafe_allow_html=True)
-        overview_data = []
-        for rec in records:
-            overview_data.append({
-                "Village": rec.get("village_name", ""),
-                "State": rec.get("state", ""),
-                "Population": _safe_int(rec.get("total_population", 0)),
-                "Area (ha)": rec.get("total_area_ha", ""),
-                "Species": _safe_int(rec.get("total_species_count", 0)),
-                "Trees": _safe_int(rec.get("tree_diversity_count", 0)),
-                "Birds": _safe_int(rec.get("bird_count", 0)),
-                "Mammals": _safe_int(rec.get("mammal_count", 0)),
-            })
-        st.dataframe(pd.DataFrame(overview_data), use_container_width=True, hide_index=True, height=min(200 + len(records) * 35, 400))
+        # ── Village History ──
+        histories = [(rec.get("village_name", ""), rec.get("village_history_narrative", "")) for rec in records]
+        histories = [(n, h) for n, h in histories if h and str(h).strip()]
+        if histories:
+            st.markdown('<div class="section-hdr">\U0001f4dc Village History</div>', unsafe_allow_html=True)
+            for name, history in histories:
+                with st.expander(f"**{name}**", expanded=len(histories) == 1):
+                    st.markdown(str(history)[:1000])
+
+        # ── Key Ecological Data ──
+        st.markdown('<div class="section-hdr">Key Ecological Data</div>', unsafe_allow_html=True)
+        eco_left, eco_right = st.columns(2)
+        with eco_left:
+            # Water sources
+            water_data = [(rec.get("village_name", ""), rec.get("drinking_water_sources", "")) for rec in records]
+            water_data = [(n, w) for n, w in water_data if w and str(w).strip()]
+            if water_data:
+                st.markdown("**\U0001f4a7 Water Sources**")
+                for name, water in water_data:
+                    st.markdown(f"- **{name}:** {str(water)[:200]}")
+
+            # Livestock
+            livestock_data = [(rec.get("village_name", ""), rec.get("livestock_summary", "")) for rec in records]
+            livestock_data = [(n, l) for n, l in livestock_data if l and str(l).strip()]
+            if livestock_data:
+                st.markdown("**\U0001f404 Livestock**")
+                for name, livestock in livestock_data:
+                    st.markdown(f"- **{name}:** {str(livestock)[:200]}")
+
+        with eco_right:
+            # Conservation
+            cons_data = [(rec.get("village_name", ""), rec.get("conservation_ethos", "")) for rec in records]
+            cons_data = [(n, c) for n, c in cons_data if c and str(c).strip()]
+            if cons_data:
+                st.markdown("**\U0001f33f Conservation**")
+                for name, cons in cons_data:
+                    st.markdown(f"- **{name}:** {str(cons)[:200]}")
+
+            # Sacred groves
+            grove_data = [(rec.get("village_name", ""), rec.get("sacred_groves", "")) for rec in records]
+            grove_data = [(n, g) for n, g in grove_data if g and str(g).strip()]
+            if grove_data:
+                st.markdown("**\U0001f333 Sacred Groves**")
+                for name, grove in grove_data:
+                    st.markdown(f"- **{name}:** {str(grove)[:200]}")
 
 
 # ────────────────────────────────────────────────────────────
@@ -500,8 +555,8 @@ with tab_explore:
                 rec = filtered[v_names.index(selected)]
 
                 detail_tabs = st.tabs([
-                    "General", "History", "Agriculture", "Livestock",
-                    "Water", "Forest", "Biodiversity", "Conservation", "All Fields"
+                    "\U0001f4cb General", "\U0001f4dc History", "\U0001f33e Agriculture", "\U0001f404 Livestock",
+                    "\U0001f4a7 Water", "\U0001f332 Forest", "\U0001f98b Biodiversity", "\U0001f33f Conservation", "\U0001f4ca All Fields"
                 ])
 
                 with detail_tabs[0]:
@@ -663,7 +718,7 @@ with tab_charts:
     if not records:
         st.info("No village data loaded yet. Go to **Manage Data** tab to upload PDFs.")
     else:
-        chart_sub = st.tabs(["Biodiversity", "Land Use", "Demographics", "Agriculture"])
+        chart_sub = st.tabs(["\U0001f98b Biodiversity", "\U0001f30d Land Use", "\U0001f465 Demographics", "\U0001f33e Agriculture"])
 
         with chart_sub[0]:
             village_names_c = [r.get("village_name", f"V{i+1}") for i, r in enumerate(records)]
@@ -779,7 +834,7 @@ with tab_reports:
     if not records:
         st.info("No village data loaded yet. Go to **Manage Data** tab to upload PDFs.")
     else:
-        report_sub = st.tabs(["Generate Report", "AI Analysis"])
+        report_sub = st.tabs(["\U0001f4c4 Generate Report", "\U0001f916 AI Analysis"])
 
         # ── Report Generation ──
         with report_sub[0]:
@@ -926,7 +981,7 @@ Task: {ai_prompts[ai_type]}"""
 # TAB 5: MANAGE DATA
 # ────────────────────────────────────────────────────────────
 with tab_manage:
-    manage_sub = st.tabs(["Upload PDFs", "Export Data", "Backup & Sync"])
+    manage_sub = st.tabs(["\U0001f4e4 Upload PDFs", "\U0001f4e5 Export Data", "\U0001f504 Backup & Sync"])
 
     # ── Upload ──
     with manage_sub[0]:
