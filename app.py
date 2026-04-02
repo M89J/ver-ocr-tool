@@ -323,14 +323,19 @@ with tab_dashboard:
         )
 
         # India Administrative Boundary overlay (ESRI India Living Atlas / Survey of India)
-        folium.TileLayer(
-            tiles="https://livingatlas.esri.in/server/rest/services/IAB2024/IAB_State_2024/MapServer/tile/{z}/{y}/{x}",
-            attr="Survey of India, ESRI India Living Atlas — IAB 2024",
-            name="India State Boundary (SOI)",
-            overlay=True,
-            control=True,
-            opacity=0.6,
-        ).add_to(m)
+        # Uses esri-leaflet JS library to render ArcGIS dynamic MapServer
+        m.get_root().header.add_child(folium.Element(
+            '<script src="https://unpkg.com/esri-leaflet@3.0.12/dist/esri-leaflet.js"></script>'
+        ))
+        m.get_root().script.add_child(folium.Element(
+            f"""
+            L.esri.dynamicMapLayer({{
+                url: 'https://livingatlas.esri.in/server/rest/services/IAB2024/IAB_State_2024/MapServer',
+                opacity: 0.6,
+                attribution: 'Survey of India, ESRI India Living Atlas — IAB 2024'
+            }}).addTo({m.get_name()});
+            """
+        ))
         folium.LayerControl(collapsed=True).add_to(m)
 
         # Village markers
