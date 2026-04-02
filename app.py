@@ -322,23 +322,16 @@ with tab_dashboard:
             min_zoom=4, max_bounds=True,
         )
 
-        # India boundary overlay (authenticated boundary as per Survey of India)
-        india_geojson_path = Path(__file__).parent / "data" / "india_boundary.geojson"
-        if india_geojson_path.exists():
-            with open(india_geojson_path, "r", encoding="utf-8") as f:
-                india_geojson = json.load(f)
-            folium.GeoJson(
-                india_geojson,
-                name="India Boundary",
-                style_function=lambda x: {
-                    "fillColor": "#d1fae5",
-                    "color": "#065f46",
-                    "weight": 2.5,
-                    "fillOpacity": 0.12,
-                    "dashArray": "",
-                },
-                tooltip="India",
-            ).add_to(m)
+        # India Administrative Boundary overlay (ESRI India Living Atlas / Survey of India)
+        folium.TileLayer(
+            tiles="https://livingatlas.esri.in/server/rest/services/IAB2024/IAB_State_2024/MapServer/tile/{z}/{y}/{x}",
+            attr="Survey of India, ESRI India Living Atlas — IAB 2024",
+            name="India State Boundary (SOI)",
+            overlay=True,
+            control=True,
+            opacity=0.6,
+        ).add_to(m)
+        folium.LayerControl(collapsed=True).add_to(m)
 
         # Village markers
         for r in villages_with_coords:
