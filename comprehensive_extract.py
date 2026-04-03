@@ -34,7 +34,7 @@ STATE_LANGUAGE_MAP = {
     "andhra pradesh": "Telugu", "telangana": "Telugu",
     "karnataka": "Kannada",
     "maharashtra": "Marathi",
-    "gujarat": "Gujarat",
+    "gujarat": "Gujarati",
     "chhattisgarh": "Hindi", "madhya pradesh": "Hindi", "rajasthan": "Hindi",
     "uttar pradesh": "Hindi", "bihar": "Hindi", "jharkhand": "Hindi",
     "nagaland": "English", "meghalaya": "English", "mizoram": "English",
@@ -307,7 +307,23 @@ def extract_text_from_pdf(pdf_path: str, language: str = "Auto-detect",
     # Lower threshold: some PDFs mix native + scanned pages
     is_native = text_pages / len(pages) > 0.3 if pages else False
 
-    if is_native:
+    # For non-Latin scripts (Devanagari, Odia, etc.), pdfplumber's native text
+    # extraction often returns garbled Unicode. Force OCR via Tesseract which is
+    # trained on these scripts and produces much better results.
+    lang_config = SUPPORTED_LANGUAGES.get(language, SUPPORTED_LANGUAGES["English"])
+    force_ocr = lang_config.get("script", "Latin") != "Latin"
+
+    # Auto-detect: check if native text contains substantial Devanagari/non-Latin
+    # characters — if so, the PDF is in a regional language and needs OCR
+    if language == "Auto-detect" and is_native:
+        all_text = " ".join(pages)
+        # Count Devanagari, Odia, Telugu, Tamil, Kannada, Gujarati characters
+        non_latin = len(re.findall(r'[\u0900-\u0D7F\u0D80-\u0DFF]', all_text))
+        latin = len(re.findall(r'[a-zA-Z]', all_text))
+        if non_latin > latin * 0.3:
+            force_ocr = True
+
+    if is_native and not force_ocr:
         return pages, True
 
     # Mixed PDF → keep native text where available, OCR only blank pages
@@ -318,7 +334,6 @@ def extract_text_from_pdf(pdf_path: str, language: str = "Auto-detect",
     except ImportError:
         return pages, False
 
-    lang_config = SUPPORTED_LANGUAGES.get(language, SUPPORTED_LANGUAGES["English"])
     tess_lang = lang_config["tesseract"]
 
     try:
@@ -329,13 +344,16 @@ def extract_text_from_pdf(pdf_path: str, language: str = "Auto-detect",
         has_cv2 = False
 
     # Keep native text pages, OCR only blank ones
+    # Exception: when force_ocr is set (non-Latin scripts), OCR ALL pages because
+    # pdfplumber's native text is garbled for Devanagari/Odia/etc.
     native_pages = pages  # preserve native text from first pass
     pages = []
     total = len(native_pages)
 
     for i in range(total):
         # Skip pages that already have native text (saves OCR time)
-        if len(native_pages[i].strip()) > 50:
+        # But NOT when force_ocr — native text is unreliable for non-Latin scripts
+        if not force_ocr and len(native_pages[i].strip()) > 50:
             pages.append(native_pages[i])
             continue
 
@@ -424,49 +442,88 @@ def find_section_ranges(pages: list[str]) -> dict:
         return re.compile("|".join(parts), re.I)
 
     section_patterns = [
+        # Keywords: English | Hindi | Marathi | Odia | Telugu | Tamil | Kannada | Gujarati
         ("s2",  _sp("2",  r'General\s+Information\s+of\s+Village',
-                    r'सामान्य जानकारी|ସାଧାରଣ ତଥ୍ୟ|సాధారణ సమాచారం|பொது தகவல்|ಸಾಮಾನ್ಯ ಮಾಹಿತಿ')),
+                    r'सामान्य जानकारी|गावाची सर्वसाधारण माहिती|सर्वसाधारण माहिती'
+                    r'|ସାଧାରଣ ତଥ୍ୟ|సాధారణ సమాచారం|பொது தகவல்|ಸಾಮಾನ್ಯ ಮಾಹಿತಿ'
+                    r'|સામાન્ય માહિતી|ગામની સામાન્ય માહિતી')),
         ("s3",  _sp("3",  r'3\.1\s+Documenting\s+Village|Village\s+History',
-                    r'गाँव का इतिहास|ଗ୍ରାମ ଇତିହାସ|గ్రామ చరిత్ర|கிராம வரலாறு|ಹಳ್ಳಿ ಇತಿಹಾಸ')),
+                    r'गाँव का इतिहास|गावाचा इतिहास'
+                    r'|ଗ୍ରାମ ଇତିହାସ|గ్రామ చరిత్ర|கிராம வரலாறு|ಹಳ್ಳಿ ಇತಿಹಾಸ'
+                    r'|ગામનો ઇતિહાસ')),
         ("s4",  _sp("4",  r'4\.1\.?\s+Cropping|Agro.?ecological\s+Knowledge',
-                    r'कृषि-पारिस्थितिक|କୃଷି-ପରିବେଶ|వ్యవసాయ|வேளாண்|ಕೃಷಿ-ಪರಿಸರ')),
+                    r'कृषि-पारिस्थितिक|शेतीविषयक'
+                    r'|କୃଷି-ପରିବେଶ|వ్యవసాయ-పర్యావరణ|வேளாண்|ಕೃಷಿ-ಪರಿಸರ'
+                    r'|કૃષિ-ઇકોલોજીકલ')),
         ("s5",  _sp("5",  r'5\.1\s+Livestock',
-                    r'पशुधन|ପଶୁ|పశువులు|கால்நடை|ಜಾನುವಾರು')),
+                    r'पशुधन'
+                    r'|ପଶୁ|పశువులు|கால்நடை|ಜಾನುವಾರು'
+                    r'|પશુધન')),
         ("s6",  _sp("6",  r'6\.1\s+Availability.*Water|Waterscape',
-                    r'जलक्षेत्र|ଜଳ|నీటి వనరులు|நீர்|ಜಲ')),
+                    r'जलक्षेत्र|पाणलोट|पानी'
+                    r'|ଜଳ|నీటి వనరులు|நீர்|ಜಲ'
+                    r'|જળ વ્યવસ્થા')),
         ("s7",  _sp("7",  r'7\.1\s+General\s+info|Forest\s+Lands',
-                    r'वन भूमि|ଜଙ୍ଗଲ|అడవి భూమి|வன நிலங்கள்|ಅರಣ್ಯ')),
+                    r'वन भूमि|वन जमीन'
+                    r'|ଜଙ୍ଗଲ|అడవి భూమి|வன நிலங்கள்|ಅರಣ್ಯ'
+                    r'|વન જમીન')),
         ("s8",  _sp("8",  r'8\.1\s+General\s+info|Grassland\s*/\s*Grazing\s+land',
-                    r'चरागाह|ଘାସ ଜମି|పచ్చిక|மேய்ச்சல்|ಹುಲ್ಲುಗಾವಲು')),
+                    r'चरागाह|गवताळ|चराई'
+                    r'|ଘାସ ଜମି|పచ్చిక బయలు|மேய்ச்சல்|ಹುಲ್ಲುಗಾವಲು'
+                    r'|ઘાસની જમીન')),
         ("s9",  _sp("9",  r'9\.1\s+General\s+info|Waste\s*[Ll]and|Revenue\s+Waste',
-                    r'राजस्व बंजर|ରାଜସ୍ୱ ଜମି|రెవెన్యూ|கழிவு நிலம்|ಕಂದಾಯ')),
+                    r'राजस्व बंजर|महसूल'
+                    r'|ରାଜସ୍ୱ ଜମି|రెవెన్యూ భూమి|கழிவு நிலம்|ಕಂದಾಯ'
+                    r'|મહેસૂલ')),
         ("s10", _sp("10", r'Grooves.*Sacred\s+groove|Sacred\s+[Gg]rove',
-                    r'पवित्र उपवन|ପବିତ୍ର ବନ|పవిత్ర వనం|புனித தோப்பு|ದೇವರ ಕಾಡು')),
+                    r'पवित्र उपवन|देवराई'
+                    r'|ପବିତ୍ର ବନ|పవిత్ర వనం|புனித தோப்பு|ದೇವರ ಕಾಡು'
+                    r'|પવિત્ર વન')),
         ("s11", _sp("11", r'Ecologically\s+important\s+sites',
-                    r'पारिस्थितिक')),
+                    r'पारिस्थितिक|पर्यावरणाच्या'
+                    r'|ઇકોલોજીકલ')),
         ("s12", _sp("12", r'List\s+of\s+Old\s+and\s+Giant|Giant\s+tree',
-                    r'पुराने और विशाल पेड़|ପୁରାତନ ଗଛ')),
+                    r'पुराने और विशाल पेड़|जुन्या|महाकाय झाडांची'
+                    r'|ପୁରାତନ ଗଛ|పురాతన చెట్లు|ಹಳೆಯ ಮರಗಳು'
+                    r'|જૂના અને વિશાળ વૃક્ષો')),
         ("s13", _sp("13", r'Locations\s+of\s+big\s+bee|[Bb]ee\s+hive',
-                    r'मधुमक्खी|ମହୁମାଛି|తేనెటీగ|தேனீ|ಜೇನುಗೂಡು')),
+                    r'मधुमक्खी|मध पोळ'
+                    r'|ମହୁମାଛି|తేనెటీగ|தேனீ|ಜೇನುಗೂಡು'
+                    r'|મધમાખી')),
         ("s14", _sp("14", r'Fire\s+incidence\s+in',
-                    r'आग|ନିଆଁ|అగ్ని|தீ|ಬೆಂಕಿ')),
+                    r'आग|आगीच्या'
+                    r'|ନିଆଁ|అగ్ని|தீ|ಬೆಂಕಿ'
+                    r'|આગ')),
         ("s15", _sp("15", r'15\.1\s+Bamboo|Local\s+Conservation\s+ethos',
-                    r'संरक्षण|ସଂରକ୍ଷଣ|సంరక్షణ|பாதுகாப்பு|ಸಂರಕ್ಷಣೆ')),
+                    r'संरक्षण|संवर्धन'
+                    r'|ସଂରକ୍ଷଣ|సంరక్షణ|பாதுகாப்பு|ಸಂರಕ್ಷಣೆ'
+                    r'|સંરક્ષણ')),
         ("s16", _sp("16", r'Medicinal\s+plants.*uses',
-                    r'औषधीय|ଔଷଧୀୟ|ఔషధ|மருத்துவ|ಔಷಧ')),
+                    r'औषधीय|औषधी'
+                    r'|ଔଷଧୀୟ|ఔషధ|மருத்துவ|ಔಷಧ'
+                    r'|ઔષધીય')),
         ("s17", _sp("17", r'Invasive\s+plants\s+in',
-                    r'आक्रामक|ଆକ୍ରମଣକାରୀ|దాడి చేసే|ஊடுருவும்|ಆಕ್ರಮಣಕಾರಿ')),
+                    r'आक्रामक|आक्रमक'
+                    r'|ଆକ୍ରମଣକାରୀ|దాడి చేసే|ஊடுருவும்|ಆಕ್ರಮಣಕಾರಿ'
+                    r'|આક્રમક')),
         ("s18", _sp("18", r'Feral\s+animal\s+in',
-                    r'जंगली जानवर|ବଣ୍ୟ ପ୍ରାଣୀ|వన్య జంతువులు|காட்டு விலங்கு|ಕಾಡು ಪ್ರಾಣಿ')),
+                    r'जंगली जानवर|जंगली प्राणी'
+                    r'|ବଣ୍ୟ ପ୍ରାଣୀ|వన్య జంతువులు|காட்டு விலங்கு|ಕಾಡು ಪ್ರಾಣಿ'
+                    r'|જંગલી પ્રાણી')),
         ("s19", _sp("19", r'socially.*culturally\s+protected',
-                    r'सांस्कृतिक|ସାଂସ୍କୃତିକ|సాంస్కృతిక|பண்பாட்டு|ಸಾಂಸ್ಕೃತಿಕ')),
+                    r'सांस्कृतिक'
+                    r'|ସାଂସ୍କୃତିକ|సాంస్కృతిక|பண்பாட்டு|ಸಾಂಸ್ಕೃತಿಕ'
+                    r'|સાંસ્કૃતિક')),
         ("s20", _sp("20", r'20\.1\s+Tree\s+diversity|List\s+of\s+flora',
-                    r'वनस्पति और जीव|ଉଦ୍ଭିଦ ଓ ଜୀବଜନ୍ତୁ|వృక్షజాతి|தாவரங்கள்|ಸಸ್ಯ ಮತ್ತು ಪ್ರಾಣಿ')),
+                    r'वनस्पति और जीव|वनस्पती आणि जीवजंतू'
+                    r'|ଉଦ୍ଭିଦ ଓ ଜୀବଜନ୍ତୁ|వృక్షజాతి మరియు జంతుజాతి|தாவரங்கள்|ಸಸ್ಯ ಮತ್ತು ಪ್ರಾಣಿ'
+                    r'|વનસ્પતિ અને પ્રાણી')),
     ]
 
     # Detect TOC pages: pages where 3+ "Section - N" headers appear (generic pattern)
+    # Also detect Marathi (विभाग -N) and Odia (ବିଭାଗ - N) TOC pages
     toc_pages = set()
-    toc_pat = re.compile(r'Section\s*[-–—]\s*\d+', re.I)
+    toc_pat = re.compile(r'(?:Section|विभाग|ବିଭାଗ)\s*[-–—]\s*\d+', re.I)
     for i, text in enumerate(pages):
         if len(toc_pat.findall(text)) >= 3:
             toc_pages.add(i)
@@ -521,33 +578,35 @@ def _extract_between(text: str, start_pat: str, end_pat: str) -> str:
 
 def parse_s2(text: str, record: dict):
     """Parse Section 2: General Information."""
-    # Village name — stop at "Village Council", "Village Institution", newline, or next field
-    m = re.search(r'Village\s+Name:\s*(.+?)(?:\s+Village\s+(?:Council|Institution)|(?:\n))', text, re.I)
+    # Village name — English + Marathi (गावाचे नाव) + Odia (ଗ୍ରାମ ନାମ) + Hindi (गाँव का नाम)
+    m = re.search(
+        r'(?:Village\s+Name|गावाचे\s+नाव|गाँव\s+का\s+नाम|ଗ୍ରାମ\s*ନାମ|গ্রামের\s+নাম)\s*[:/]?\s*(.+?)(?:\s+Village\s+(?:Council|Institution)|(?:\n))',
+        text, re.I)
     if m:
         record["village_name"] = _clean(m.group(1))
 
-    # State — stop at "Village" field label or newline
-    m = re.search(r'State:\s*(.+?)(?:\s+Village\s*\(|(?:\n))', text, re.I)
+    # State — English + Marathi (राज्य) + Odia (ରାଜ୍ୟ)
+    m = re.search(r'(?:State|राज्य|ରାଜ୍ୟ)\s*[:/]?\s*(.+?)(?:\s+Village\s*\(|(?:\n))', text, re.I)
     if m:
         record["state"] = _clean(m.group(1))
 
-    # District
-    m = re.search(r'(?:District|Jila|ଜିଲ୍ଲା|जिला|மாவட்டம்|జిల్లా|ಜಿಲ್ಲೆ|જિલ્લો)\s*[:/]?\s*(.+?)(?:\n|$)', text, re.I)
+    # District — English + Marathi (जिल्हा) + Odia (ଜିଲ୍ଲା) + Hindi (जिला)
+    m = re.search(r'(?:District|Jila|जिल्हा|जिला|ଜିଲ୍ଲା|மாவட்டம்|జిల్లా|ಜಿಲ್ಲೆ|જિલ્લો)\s*[:/]?\s*(.+?)(?:\n|$)', text, re.I)
     if m:
         record["district"] = _clean(m.group(1))
 
-    # Block
-    m = re.search(r'Block:\s*(.+?)(?:\n|$)', text, re.I)
+    # Block — English + Marathi (तालुका) + Odia (ବ୍ଲକ/ତହସିଲ) + Hindi (खंड)
+    m = re.search(r'(?:Block|तालुका|तहसील|खंड|ବ୍ଲକ|ତହସିଲ|Taluka)\s*[:/]?\s*(.+?)(?:\n|$)', text, re.I)
     if m:
         record["block"] = _clean(m.group(1))
 
-    # Gram Panchayat / Village Council
-    m = re.search(r'(?:Gram\s*Panchayat|Village\s*(?:Council|Institution)|ग्राम\s*पंचायत|ଗ୍ରାମ\s*ପଞ୍ଚାୟତ|கிராம\s*பஞ்சாயத்|గ్రామ\s*పంచాయతీ|ಗ್ರಾಮ\s*ಪಂಚಾಯತ|ग्रामपंचायत)\s*[:/]?\s*(.+?)(?:\n|$)', text, re.I)
+    # Gram Panchayat / Village Council — + Marathi (ग्रामपंचायत) + Odia (ଗ୍ରାମ ପଞ୍ଚାୟତ)
+    m = re.search(r'(?:Gram\s*Panchayat|Village\s*(?:Council|Institution)|ग्राम\s*पंचायत|ग्रामपंचायत|ଗ୍ରାମ\s*ପଞ୍ଚାୟତ|கிராம\s*பஞ்சாயத்|గ్రామ\s*పంచాయతీ|ಗ್ರಾಮ\s*ಪಂಚಾಯತ|ગ્રામ\s*પંચાયત)\s*[:/]?\s*(.+?)(?:\n|$)', text, re.I)
     if m:
         record["gram_panchayat"] = _clean(m.group(1))
 
-    # Date
-    m = re.search(r'Date:\s*(.+?)(?:\n|$)', text, re.I)
+    # Date — English + Marathi (दिनांक/तारीख) + Odia (ତାରିଖ)
+    m = re.search(r'(?:Date|दिनांक|तारीख|ତାରିଖ)\s*[:/]?\s*(.+?)(?:\n|$)', text, re.I)
     if m:
         record["date_of_survey"] = _clean(m.group(1))
 
@@ -582,17 +641,18 @@ def parse_s2(text: str, record: dict):
                 record["longitude"] = lon
 
     # Total area — handles both percentage format and hectare format
-    m = re.search(r'(\d+(?:\.\d+)?)\s*ha\s*\n?\s*\(?\s*100%', text, re.I)
+    # Marathi: एकूण गावाचे क्षेत्रफळ / हेक्टर, Odia: ମୋଟ ଗ୍ରାମ କ୍ଷେତ୍ରଫଳ
+    m = re.search(r'(\d+(?:\.\d+)?)\s*(?:ha|हे|हेक्टर|ହେ)\s*\n?\s*\(?\s*100%', text, re.I)
     if m:
         record["total_area_ha"] = m.group(1)
         after = text[m.end():]
-        pcts = re.findall(r'(\d+)%|([Nn]il)', after[:200])
+        pcts = re.findall(r'(\d+)%|([Nn]il|शून्य|ନିଲ)', after[:200])
         pct_vals = [int(n) if n else 0 for n, nil in pcts]
 
         # Detect column order: official format has "Revenue Wasteland" 3rd,
         # Nagaland/NE format has "Community Conserved Area" 3rd
-        has_cca = bool(re.search(r'Community\s+Conserved', text, re.I))
-        has_rwl = bool(re.search(r'Revenue\s+Waste', text, re.I))
+        has_cca = bool(re.search(r'Community\s+Conserved|समुदाय\s+संरक्षित', text, re.I))
+        has_rwl = bool(re.search(r'Revenue\s+Waste|महसूल\s+बंजर|ରାଜସ୍ୱ\s+ଜମି', text, re.I))
 
         if has_cca:
             fields = ["forest_land_pct", "grazing_land_pct", "community_conserved_area_pct",
@@ -606,8 +666,9 @@ def parse_s2(text: str, record: dict):
                 record[f] = str(pct_vals[i]) + "%"
 
     # Also try hectare-based format (official VER: "Forest Land (in ha)")
+    # Marathi: एकूण गावाचे क्षेत्रफळ, Odia: ମୋଟ ଗ୍ରାମ କ୍ଷେତ୍ରଫଳ
     if not record["total_area_ha"]:
-        m = re.search(r'Total\s+Village\s+Area.*?(\d+(?:\.\d+)?)', text, re.I | re.DOTALL)
+        m = re.search(r'(?:Total\s+Village\s+Area|एकूण\s+गावाचे\s+क्षेत्रफळ|ମୋଟ\s+ଗ୍ରାମ\s+କ୍ଷେତ୍ରଫଳ).*?(\d+(?:\.\d+)?)', text, re.I | re.DOTALL)
         if m:
             record["total_area_ha"] = m.group(1)
 
@@ -616,75 +677,98 @@ def parse_s2(text: str, record: dict):
     if m:
         record["other_land_details"] = _clean(m.group(1))
 
-    # Population
-    m = re.search(r'Total\s+Population:\s*([\d,]+)', text, re.I)
+    # Population — Marathi: एकूण लोकसंख्या, Odia: ମୋଟ ଜନସଂଖ୍ୟା
+    m = re.search(r'(?:Total\s+Population|एकूण\s+लोकसंख्या|कुल\s+जनसंख्या|ମୋଟ\s+ଜନସଂଖ୍ୟା)\s*[:/]?\s*([\d,]+)', text, re.I)
     if m:
         record["total_population"] = m.group(1).replace(',', '')
 
-    # Households
-    m = re.search(r'households\)?\s*(\d+)', text, re.I)
+    # Households — Marathi: कुटुंबे, Odia: ପରିବାର
+    m = re.search(r'(?:households|कुटुंबे|परिवार|ପରିବାର)\)?\s*(\d+)', text, re.I)
     if m:
         record["total_households"] = m.group(1)
 
-    # Caste composition
-    caste_block = re.search(r'Caste\s+composition.*?Total\s+Population', text, re.DOTALL | re.I)
+    # Caste composition — Marathi: जातिनिहाय रचना, Odia: ଜାତି ଗଠନ
+    caste_block = re.search(r'(?:Caste\s+composition|जातिनिहाय|जाति\s+संरचना|ଜାତି\s+ଗଠନ).*?(?:Total\s+Population|एकूण\s+लोकसंख्या|ମୋଟ\s+ଜନସଂଖ୍ୟା)', text, re.DOTALL | re.I)
     if caste_block:
         cb = caste_block.group(0)
-        for label, field in [("General", "gen_hh"), (r"Scheduled\s+Caste", "sc_hh"),
-                             (r"Scheduled\s+Tribe", "st_hh"), (r"Other\s+Backward", "obc_hh")]:
-            m2 = re.search(rf'{label}.*?\n.*?(\d+|N/A|Nil)', cb, re.I | re.DOTALL)
+        for label, field in [
+            (r"(?:General|सामान्य|ସାଧାରଣ)", "gen_hh"),
+            (r"(?:Scheduled\s+Caste|अनुसूचित\s+जाती|अनुसूचित\s+जाति|ଅନୁସୂଚିତ\s+ଜାତି)", "sc_hh"),
+            (r"(?:Scheduled\s+Tribe|अनुसूचित\s+जमाती|अनुसूचित\s+जनजाति|ଅନୁସୂଚିତ\s+ଜନଜାତି)", "st_hh"),
+            (r"(?:Other\s+Backward|इतर\s+मागास|अन्य\s+पिछड़ा|ଅନ୍ୟ\s+ପଛୁଆ)", "obc_hh"),
+        ]:
+            m2 = re.search(rf'{label}.*?\n.*?(\d+|N/A|Nil|शून्य|ନିଲ)', cb, re.I | re.DOTALL)
             if m2:
-                record[field] = m2.group(1)
+                val = m2.group(1)
+                record[field] = "0" if val.lower() in ("nil", "शून्य", "ନିଲ") else val
 
-    # Landholding
-    lh = re.search(r'Landholding.*?Number\s+of\s*\n?\s*Households\s*\n(.*?)(?=Remarks|2\.\d|$)',
+    # Landholding — Marathi: जमीनधारणा, Odia: ଜମି ଧାରଣ
+    lh = re.search(r'(?:Landholding|जमीनधारणा|भूमि\s+धारण|ଜମି\s+ଧାରଣ).*?(?:Number\s+of|संख्या|କୁଟୁମ୍ବ\s+ସଂଖ୍ୟା)\s*\n?\s*(?:Households|कुटुंबे|परिवार|ପରିବାର)\s*\n(.*?)(?=Remarks|शेरा|ମନ୍ତବ୍ୟ|2\.\d|$)',
                    text, re.I | re.DOTALL)
     if lh:
-        vals = re.findall(r'(\d+|Nil)', lh.group(1))
+        vals = re.findall(r'(\d+|Nil|शून्य|ନିଲ)', lh.group(1))
         fields = ["large_farmers_gt10ha", "medium_farmers_4_10ha", "semi_medium_2_4ha",
                   "small_farmers_1_2ha", "marginal_farmers_lt1ha", "landless_farmers"]
         for i, f in enumerate(fields):
             if i < len(vals):
-                record[f] = "0" if vals[i] == "Nil" else vals[i]
+                record[f] = "0" if vals[i].lower() in ("nil", "शून्य", "ନିଲ") else vals[i]
 
-    # Remarks
-    m = re.search(r'Remarks:\s*(.+?)(?:\n\n|2\.\d|$)', text, re.DOTALL)
+    # Remarks — Marathi: शेरा, Odia: ମନ୍ତବ୍ୟ
+    m = re.search(r'(?:Remarks|शेरा|टिप्पणी|ମନ୍ତବ୍ୟ)\s*[:/]?\s*(.+?)(?:\n\n|2\.\d|$)', text, re.DOTALL)
     if m:
         record["landholding_remarks"] = _clean(m.group(1))
 
-    # Livelihoods
-    lv = re.search(r'Major\s+Livelihood.*?(?=Section|$)', text, re.I | re.DOTALL)
+    # Livelihoods — Marathi: प्रमुख उपजीविका, Odia: ପ୍ରମୁଖ ଜୀବିକା
+    lv = re.search(r'(?:Major\s+Livelihood|प्रमुख\s+उपजीविका|मुख्य\s+आजीविका|ପ୍ରମୁଖ\s+ଜୀବିକା).*?(?=Section|विभाग|ବିଭାଗ|$)', text, re.I | re.DOTALL)
     if lv:
-        items = re.findall(r'\([a-z]\)\s*([A-Za-z][\w\s.]+?)(?=\s*\([a-z]\)|$)', lv.group(0))
+        # Try structured (a)...(b)... format first
+        items = re.findall(r'\([a-z\u0900-\u0D7F]\)\s*(.+?)(?=\s*\([a-z\u0900-\u0D7F]\)|$)', lv.group(0))
+        if not items:
+            # Fallback: line-by-line extraction
+            items = [l.strip() for l in lv.group(0).split('\n')
+                     if l.strip() and len(l.strip()) > 2
+                     and not re.match(r'(?:Major|प्रमुख|मुख्य|ପ୍ରମୁଖ)', l.strip(), re.I)]
         record["major_livelihoods"] = "; ".join(i.strip() for i in items if len(i.strip()) > 2)
 
 
 def parse_s3(text: str, record: dict):
     """Parse Section 3: Village History."""
-    # History narrative (3.1)
-    s31 = re.search(r'3\.1\s+.*?(?:History|ଇତିହାସ).*?(?=3\.2|\Z)', text, re.DOTALL | re.I)
+    # History narrative (3.1) — Marathi: इतिहास, Odia: ଇତିହାସ
+    s31 = re.search(r'3\.1\s+.*?(?:History|इतिहास|ଇତିହାସ).*?(?=3\.2|\Z)', text, re.DOTALL | re.I)
     if s31:
         record["village_history_narrative"] = _clean(s31.group(0))[:2000]
 
-    # Myths & beliefs (3.2)
-    s32 = re.search(r'3\.2\s+.*?(?:Myths|Beliefs|ବିଶ୍ବାସ).*?(?=3\.3|\Z)', text, re.DOTALL | re.I)
+    # Myths & beliefs (3.2) — Marathi: दंतकथा/श्रद्धा, Odia: ବିଶ୍ବାସ
+    s32 = re.search(r'3\.2\s+.*?(?:Myths|Beliefs|दंतकथा|श्रद्धा|ବିଶ୍ବାସ|ଲୋକକଥା).*?(?=3\.3|\Z)', text, re.DOTALL | re.I)
     if s32:
         record["myths_and_beliefs"] = _clean(s32.group(0))[:2000]
 
-    # Traditional songs within 3.2
-    songs = re.findall(r'Song\s*\n(.+?)(?=Song\s*\n|\Z)', text, re.DOTALL | re.I)
+    # Traditional songs within 3.2 — Marathi: गीत/गाणे, Odia: ଗୀତ
+    songs = re.findall(r'(?:Song|गीत|गाणे|ଗୀତ)\s*\n(.+?)(?=(?:Song|गीत|गाणे|ଗୀତ)\s*\n|\Z)', text, re.DOTALL | re.I)
     if songs:
         record["traditional_songs"] = "; ".join(_clean(s)[:200] for s in songs[:5])
 
 
 def parse_s4(text: str, record: dict):
     """Parse Section 4: Agro-ecological."""
-    # Cropping pattern
+    # Cropping pattern — season names are same in Marathi/Odia (खरीप/रबी/उन्हाळी or ଖରିଫ/ରବି/ଜାଏଦ)
+    season_alts = {
+        "Kharif": r"(?:Kharif|खरीप|खरीफ|ଖରିଫ)",
+        "Rabi": r"(?:Rabi|रबी|ରବି)",
+        "Zaid": r"(?:Zaid|उन्हाळी|जायद|ଜାଏଦ)",
+    }
     for season, field in [("Kharif", "kharif_crops"), ("Rabi", "rabi_crops"), ("Zaid", "zaid_crops")]:
-        m = re.search(rf'{season}\s+Season\s*\n(.*?)(?=\b(?:Rabi|Zaid|Kharif)\s+Season|4\.\d|Section|\Z)',
+        pat = season_alts[season]
+        m = re.search(rf'{pat}\s+(?:Season|हंगाम|ऋतु|ଋତୁ)\s*\n(.*?)(?=\b(?:Rabi|Zaid|Kharif|रबी|खरीप|उन्हाळी|ରବି|ଖରିଫ|ଜାଏଦ)\s+(?:Season|हंगाम|ऋतु|ଋତୁ)|4\.\d|Section|विभाग|ବିଭାଗ|\Z)',
                       text, re.DOTALL | re.I)
         if m:
+            # Extract crop names — works for both Latin and Devanagari/Odia script
             crops = re.findall(r'^([A-Z][a-z]+(?:\s+[a-z]+)?)', m.group(1), re.MULTILINE)
+            if not crops:
+                # Try Devanagari/Odia crop names (lines starting with non-digit, non-whitespace)
+                crops = [l.strip() for l in m.group(1).split('\n')
+                         if l.strip() and len(l.strip()) > 2
+                         and not re.match(r'^[\d\s(√✔↑↓↔]+$', l.strip())]
             record[field] = "; ".join(c for c in crops if len(c) > 2 and c not in ("Rice", "Season"))
             if not record[field] and crops:
                 record[field] = "; ".join(crops[:15])
@@ -706,14 +790,14 @@ def parse_s4(text: str, record: dict):
     if hb:
         record["hedge_biodiversity"] = _clean(hb.group(0))[:1500]
 
-    # Soil health
-    m = re.search(r'Soil\s+types?\s*\n?\s*(.+?)(?:\n)', text, re.I)
+    # Soil health — Marathi: मातीचा प्रकार, Odia: ମାଟି ପ୍ରକାର
+    m = re.search(r'(?:Soil\s+types?|मातीचा\s+प्रकार|मिट्टी\s+का\s+प्रकार|ମାଟି\s+ପ୍ରକାର)\s*\n?\s*(.+?)(?:\n)', text, re.I)
     if m:
         record["soil_type"] = _clean(m.group(1))
-    m = re.search(r'Soil\s+fertility.*?changed.*?\n\s*(.+?)(?:\n)', text, re.I | re.DOTALL)
+    m = re.search(r'(?:Soil\s+fertility|मातीची\s+सुपीकता|मिट्टी\s+की\s+उर्वरता|ମାଟି\s+ଉର୍ବରତା).*?(?:changed|बदल|ବଦଳ).*?\n\s*(.+?)(?:\n)', text, re.I | re.DOTALL)
     if m:
         record["soil_fertility_change"] = _clean(m.group(1))
-    m = re.search(r'Reasons?\s+for\s+changes?\s+in\s+soil\s+fertility\s*\n\s*(.+?)(?:\n)', text, re.I)
+    m = re.search(r'(?:Reasons?\s+for\s+changes?\s+in\s+soil\s+fertility|मातीच्या\s+सुपीकतेत\s+बदल|ମାଟି\s+ଉର୍ବରତା\s+ବଦଳ)\s*\n\s*(.+?)(?:\n)', text, re.I)
     if m:
         record["soil_fertility_reason"] = _clean(m.group(1))
 
@@ -740,21 +824,34 @@ def parse_s4(text: str, record: dict):
 
 def parse_s5(text: str, record: dict):
     """Parse Section 5: Livestock."""
-    # Livestock numbers table
-    livestock_types = ["Cows (indigenous)", "Cow (Hybrids)", "Oxen", "Pig", "Buffaloes",
-                       "Goat", "Sheep", "Poultry", "Duckery", "Mithun", "Rabbit",
-                       "Horse", "Donkey", "Camel"]
+    # Livestock numbers table — with Marathi (गाय, म्हैस, बैल, etc.) and Odia (ଗାଈ, ମଇଁଷି, etc.)
+    # Each entry: (English name, regex pattern matching English + Marathi + Odia names)
+    livestock_patterns = [
+        ("Cows",      r'(?:Cows?\s*\(?indigenous\)?|देशी\s*गाय|गाय\s*\(?देशी\)?|ଦେଶୀ\s*ଗାଈ|ଗାଈ)'),
+        ("Hybrid Cow", r'(?:Cow\s*\(?Hybrid|संकरित\s*गाय|गाय\s*\(?संकरित\)?|ସଙ୍କର\s*ଗାଈ)'),
+        ("Oxen",      r'(?:Oxen|बैल|बैलजोडी|ଗୋରୁ|ବଳଦ)'),
+        ("Pig",       r'(?:Pig|डुक्कर|सूअर|ଘୁଷୁରି|ଶୂକର)'),
+        ("Buffaloes", r'(?:Buffalo|म्हैस|भैंस|ମଇଁଷି|ମହିଷ)'),
+        ("Goat",      r'(?:Goat|बकरी|शेळी|ଛେଳି)'),
+        ("Sheep",     r'(?:Sheep|मेंढी|भेड़|ମେଣ୍ଢା)'),
+        ("Poultry",   r'(?:Poultry|कोंबड्या|मुर्गी|କୁକୁଡ଼ା)'),
+        ("Duckery",   r'(?:Duckery|Duck|बदक|बतख|ହଂସ)'),
+        ("Mithun",    r'(?:Mithun|मिथुन|ମିଥୁନ)'),
+        ("Rabbit",    r'(?:Rabbit|ससा|खरगोश|ଖରଗୋଶ)'),
+        ("Horse",     r'(?:Horse|घोडा|घोड़ा|ଘୋଡ଼ା)'),
+        ("Donkey",    r'(?:Donkey|गाढव|गधा|ଗଧ)'),
+        ("Camel",     r'(?:Camel|उंट|ऊँट|ଓଟ)'),
+    ]
     summary_parts = []
     detailed_parts = []
 
-    s51 = re.search(r'5\.1\s+Livestock\s+number.*?(?=5\.2|Section|$)', text, re.I | re.DOTALL)
+    s51 = re.search(r'5\.1\s+(?:Livestock|पशुधन|ପଶୁ)\s+(?:number|संख्या|ସଂଖ୍ୟା).*?(?=5\.2|Section|विभाग|ବିଭାଗ|$)', text, re.I | re.DOTALL)
     if s51:
         s51_text = s51.group(0)
-        for lt in livestock_types:
-            short = lt.split("(")[0].strip()
-            m = re.search(rf'{re.escape(short)}\s*\n?\s*(?:\([^)]*\)\s*\n?)?\s*(\d+|Nil)', s51_text, re.I)
+        for short, pat in livestock_patterns:
+            m = re.search(rf'{pat}\s*\n?\s*(?:\([^)]*\)\s*\n?)?\s*(\d+|Nil|शून्य|ନିଲ)', s51_text, re.I)
             if m:
-                val = 0 if m.group(1).lower() == 'nil' else int(m.group(1))
+                val = 0 if m.group(1).lower() in ('nil', 'शून्य', 'ନିଲ') else int(m.group(1))
                 # Get trends — map arrows to readable text
                 after = s51_text[m.end():m.end() + 150]
                 trend_map = {'↑': 'Up', '↓': 'Down', '↔': 'Stable'}
@@ -769,54 +866,58 @@ def parse_s5(text: str, record: dict):
     record["livestock_summary"] = "; ".join(summary_parts)
     record["livestock_detailed"] = "; ".join(detailed_parts)
 
-    # Indigenous breeds
-    ib = re.search(r'5\.2\s+.*?[Ii]ndigenous\s+breeds.*?(?=5\.3|Section|$)', text, re.DOTALL | re.I)
+    # Indigenous breeds — Marathi: देशी जाती, Odia: ଦେଶୀ ଜାତି
+    ib = re.search(r'5\.2\s+.*?(?:[Ii]ndigenous\s+breeds|देशी\s+जाती|ଦେଶୀ\s+ଜାତି).*?(?=5\.3|Section|विभाग|ବିଭାଗ|$)', text, re.DOTALL | re.I)
     if ib:
         record["indigenous_breeds"] = _clean(ib.group(0))[:1500]
 
-    # Diseases
-    dis = re.search(r'5\.3\s+.*?[Dd]iseases.*?(?=5\.4|Section|$)', text, re.DOTALL | re.I)
+    # Diseases — Marathi: रोग, Odia: ରୋଗ
+    dis = re.search(r'5\.3\s+.*?(?:[Dd]iseases|रोग|ରୋଗ).*?(?=5\.4|Section|विभाग|ବିଭାଗ|$)', text, re.DOTALL | re.I)
     if dis:
         record["livestock_diseases"] = _clean(dis.group(0))[:1500]
 
-    # Ethno-vet
-    ev = re.search(r'5\.4\s+.*?[Ee]thno.*?(?=5\.5|Section|$)', text, re.DOTALL | re.I)
+    # Ethno-vet — Marathi: पारंपरिक पशुवैद्यकीय, Odia: ଲୋକ ପଶୁ ଚିକିତ୍ସା
+    ev = re.search(r'5\.4\s+.*?(?:[Ee]thno|पारंपरिक\s+पशु|ଲୋକ\s+ପଶୁ).*?(?=5\.5|Section|विभाग|ବିଭାଗ|$)', text, re.DOTALL | re.I)
     if ev:
         record["ethno_veterinary_practices"] = _clean(ev.group(0))[:1500]
 
     # Traditional practices (5.5 if present)
-    tp = re.search(r'5\.5\s+.*?(?=Section|$)', text, re.DOTALL | re.I)
+    tp = re.search(r'5\.5\s+.*?(?=Section|विभाग|ବିଭାଗ|$)', text, re.DOTALL | re.I)
     if tp:
         record["traditional_livestock_practices"] = _clean(tp.group(0))[:1500]
 
 
 def parse_s6(text: str, record: dict):
     """Parse Section 6: Waterscape."""
-    water_types = ["Tap", "Tube-well", "Tubewell", "Open Well", "Spring", "River", "Stream"]
+    # Water types: English + Marathi + Odia names
+    water_patterns = [
+        ("Tap",       r'(?:Tap|नळ|ନଳ)'),
+        ("Tubewell",  r'(?:Tube-?well|बोअरवेल|बोअर|ନଳକୂପ)'),
+        ("Open Well", r'(?:Open\s+Well|विहीर|खुला\s+कुआ|ଖୋଲା\s+କୂଅ)'),
+        ("Spring",    r'(?:Spring|झरा|ଝରଣା)'),
+        ("River",     r'(?:River|नदी|ନଦୀ)'),
+        ("Stream",    r'(?:Stream|ओढा|ନାଳ)'),
+    ]
 
-    # 6.1 Drinking
-    s61 = re.search(r'6\.1\s+.*?[Dd]rinking.*?(?=6\.2|$)', text, re.DOTALL | re.I)
+    def _extract_water_counts(block_text):
+        parts = []
+        for label, pat in water_patterns:
+            m = re.search(rf'{pat}\s*\n?\s*(\d+|Nil|शून्य|ନିଲ)', block_text, re.I)
+            if m:
+                val = 0 if m.group(1).lower() in ('nil', 'शून्य', 'ନିଲ') else int(m.group(1))
+                if val > 0:
+                    parts.append(f"{label}:{val}")
+        return "; ".join(parts)
+
+    # 6.1 Drinking — Marathi: पिण्याचे पाणी, Odia: ପାନୀୟ ଜଳ
+    s61 = re.search(r'6\.1\s+.*?(?:[Dd]rinking|पिण्याचे\s+पाणी|ପାନୀୟ\s+ଜଳ).*?(?=6\.2|$)', text, re.DOTALL | re.I)
     if s61:
-        parts = []
-        for wt in water_types:
-            m = re.search(rf'{re.escape(wt)}\s*\n?\s*(\d+|Nil)', s61.group(0), re.I)
-            if m:
-                val = 0 if m.group(1).lower() == 'nil' else int(m.group(1))
-                if val > 0:
-                    parts.append(f"{wt}:{val}")
-        record["drinking_water_sources"] = "; ".join(parts)
+        record["drinking_water_sources"] = _extract_water_counts(s61.group(0))
 
-    # 6.2 Livestock water
-    s62 = re.search(r'6\.2\s+.*?[Ll]ivestock.*?(?=6\.3|$)', text, re.DOTALL | re.I)
+    # 6.2 Livestock water — Marathi: पशुधन पाणी, Odia: ପଶୁ ପାଣି
+    s62 = re.search(r'6\.2\s+.*?(?:[Ll]ivestock|पशुधन|ପଶୁ).*?(?=6\.3|$)', text, re.DOTALL | re.I)
     if s62:
-        parts = []
-        for wt in water_types:
-            m = re.search(rf'{re.escape(wt)}\s*\n?\s*(\d+|Nil)', s62.group(0), re.I)
-            if m:
-                val = 0 if m.group(1).lower() == 'nil' else int(m.group(1))
-                if val > 0:
-                    parts.append(f"{wt}:{val}")
-        record["livestock_water_sources"] = "; ".join(parts)
+        record["livestock_water_sources"] = _extract_water_counts(s62.group(0))
 
     # 6.3 Irrigation
     s63 = re.search(r'6\.3\s+.*?[Ii]rrigation.*?(?=6\.4|$)', text, re.DOTALL | re.I)
@@ -843,11 +944,13 @@ def parse_s6(text: str, record: dict):
 
 def parse_s7(text: str, record: dict):
     """Parse Section 7: Forest Lands."""
-    m = re.search(r'Name\s+of\s+the\s+forest:\s*(.+?)(?:\n|$)', text, re.I)
+    # Forest name — Marathi: जंगलाचे नाव, Odia: ଜଙ୍ଗଲ ନାମ
+    m = re.search(r'(?:Name\s+of\s+the\s+forest|जंगलाचे\s+नाव|वनाचे\s+नाव|ଜଙ୍ଗଲ\s+ନାମ)\s*[:/]?\s*(.+?)(?:\n|$)', text, re.I)
     if m:
         record["forest_name"] = _clean(m.group(1))
 
-    m = re.search(r'Type\s+of\s+Forest.*?:\s*(.+?)(?:\n|$)', text, re.I)
+    # Forest type — Marathi: जंगलाचा प्रकार, Odia: ଜଙ୍ଗଲ ପ୍ରକାର
+    m = re.search(r'(?:Type\s+of\s+Forest|जंगलाचा\s+प्रकार|वनाचा\s+प्रकार|ଜଙ୍ଗଲ\s+ପ୍ରକାର).*?[:/]?\s*(.+?)(?:\n|$)', text, re.I)
     if m:
         record["forest_type"] = _clean(m.group(1))
 
@@ -855,36 +958,42 @@ def parse_s7(text: str, record: dict):
     if m:
         record["forest_location_geocode"] = _clean(m.group(1))
 
-    m = re.search(r'Size.*?(?:ha|hectare).*?:\s*(.+?)(?:\n|$)', text, re.I)
+    # Size — Marathi: आकार/हेक्टर, Odia: ଆକାର/ହେ
+    m = re.search(r'(?:Size|आकार|ଆକାର).*?(?:ha|hectare|हेक्टर|ହେ).*?[:/]?\s*(.+?)(?:\n|$)', text, re.I)
     if m:
         record["forest_size_ha"] = _clean(m.group(1))
 
-    # Species composition (7.2)
-    s72 = re.search(r'7\.2\s+.*?(?=7\.3|Section|$)', text, re.DOTALL | re.I)
+    # Species composition (7.2) — Marathi: वृक्ष/झुडूप/वनौषधी/गवत/वेली, Odia: ଗଛ/ଝାଉ/ଔଷଧ/ଘାସ/ଲତା
+    s72 = re.search(r'7\.2\s+.*?(?=7\.3|Section|विभाग|ବିଭାଗ|$)', text, re.DOTALL | re.I)
     if s72:
-        for group_name, field in [("Tree", "forest_tree_species"), ("Shrub", "forest_shrub_species"),
-                                   ("Herb", "forest_herb_species"), ("Grass", "forest_grass_species"),
-                                   ("Climber", "forest_climber_species")]:
-            m2 = re.search(rf'{group_name}s?\s*\n(.*?)(?=\n(?:Tree|Shrub|Herb|Grass|Climber|$))',
+        for group_pat, field in [
+            (r"(?:Trees?|वृक्ष|ଗଛ)", "forest_tree_species"),
+            (r"(?:Shrubs?|झुडूप|ଝାଉ)", "forest_shrub_species"),
+            (r"(?:Herbs?|वनौषधी|ଔଷଧୀ)", "forest_herb_species"),
+            (r"(?:Grass|गवत|ଘାସ)", "forest_grass_species"),
+            (r"(?:Climbers?|वेली|ଲତା)", "forest_climber_species"),
+        ]:
+            m2 = re.search(rf'{group_pat}\s*\n(.*?)(?=\n(?:Tree|Shrub|Herb|Grass|Climber|वृक्ष|झुडूप|वनौषधी|गवत|वेली|ଗଛ|ଝାଉ|ଔଷଧୀ|ଘାସ|ଲତା|$))',
                           s72.group(0), re.DOTALL | re.I)
             if m2:
                 record[field] = _clean(m2.group(1))[:500]
 
-    # NTFP (7.3)
-    s73 = re.search(r'7\.3\s+.*?(?=Section|$)', text, re.DOTALL | re.I)
+    # NTFP (7.3) — Marathi: गौण वनउत्पादने, Odia: ଗୌଣ ବନଜାତ ଦ୍ରବ୍ୟ
+    s73 = re.search(r'7\.3\s+.*?(?=Section|विभाग|ବିଭାଗ|$)', text, re.DOTALL | re.I)
     if s73:
         record["forest_ntfp"] = _clean(s73.group(0))[:1000]
 
 
 def parse_s8(text: str, record: dict):
     """Parse Section 8: Grassland."""
-    m = re.search(r'Name.*?[Gg]razing.*?:\s*(.+?)(?:\n|$)', text, re.I)
+    # Marathi: गवताळ जमिनीचे नाव / चराईचे नाव, Odia: ଘାସ ଜମି ନାମ
+    m = re.search(r'(?:Name.*?[Gg]razing|गवताळ\s+जमिनीचे\s+नाव|चराई\s+क्षेत्राचे\s+नाव|ଘାସ\s+ଜମି\s+ନାମ).*?[:/]?\s*(.+?)(?:\n|$)', text, re.I)
     if m:
         record["grassland_name"] = _clean(m.group(1))
-    s82 = re.search(r'8\.2\s+.*?(?=8\.3|Section|$)', text, re.DOTALL | re.I)
+    s82 = re.search(r'8\.2\s+.*?(?=8\.3|Section|विभाग|ବିଭାଗ|$)', text, re.DOTALL | re.I)
     if s82:
         record["grassland_species"] = _clean(s82.group(0))[:1000]
-    s83 = re.search(r'8\.3\s+.*?(?=Section|$)', text, re.DOTALL | re.I)
+    s83 = re.search(r'8\.3\s+.*?(?=Section|विभाग|ବିଭାଗ|$)', text, re.DOTALL | re.I)
     if s83:
         record["grassland_ntfp"] = _clean(s83.group(0))[:500]
 
