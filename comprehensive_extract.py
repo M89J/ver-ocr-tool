@@ -16,6 +16,7 @@ import pdfplumber
 # ── Language configuration ────────────────────────────────────
 
 SUPPORTED_LANGUAGES = {
+    "Auto-detect": {"tesseract": "eng", "script": "Latin"},
     "English": {"tesseract": "eng", "script": "Latin"},
     "Hindi": {"tesseract": "hin+eng", "script": "Devanagari"},
     "Odia": {"tesseract": "ori+hin+eng", "script": "Odia"},
@@ -24,7 +25,6 @@ SUPPORTED_LANGUAGES = {
     "Kannada": {"tesseract": "kan+eng", "script": "Kannada"},
     "Marathi": {"tesseract": "mar+eng", "script": "Devanagari"},
     "Gujarati": {"tesseract": "guj+eng", "script": "Gujarati"},
-    "Auto-detect": {"tesseract": "eng", "script": "Latin"},
 }
 
 # State → language mapping for auto-detection
@@ -313,15 +313,28 @@ def extract_text_from_pdf(pdf_path: str, language: str = "Auto-detect",
     lang_config = SUPPORTED_LANGUAGES.get(language, SUPPORTED_LANGUAGES["English"])
     force_ocr = lang_config.get("script", "Latin") != "Latin"
 
-    # Auto-detect: check if native text contains substantial Devanagari/non-Latin
-    # characters — if so, the PDF is in a regional language and needs OCR
+    # Auto-detect: try to detect the actual language from native text
     if language == "Auto-detect" and is_native:
         all_text = " ".join(pages)
-        # Count Devanagari, Odia, Telugu, Tamil, Kannada, Gujarati characters
-        non_latin = len(re.findall(r'[\u0900-\u0D7F\u0D80-\u0DFF]', all_text))
-        latin = len(re.findall(r'[a-zA-Z]', all_text))
-        if non_latin > latin * 0.3:
+        all_lower = all_text.lower()
+
+        # Method 1: detect state name in the native text → infer language
+        detected_lang = None
+        for state_name, lang_name in STATE_LANGUAGE_MAP.items():
+            if state_name in all_lower:
+                detected_lang = lang_name
+                break
+
+        if detected_lang and detected_lang != "English":
+            lang_config = SUPPORTED_LANGUAGES.get(detected_lang, lang_config)
+            language = detected_lang
             force_ocr = True
+
+        # Method 2: check for non-Latin script characters (even a small amount)
+        if not force_ocr:
+            non_latin = len(re.findall(r'[\u0900-\u0D7F\u0D80-\u0DFF]', all_text))
+            if non_latin > 20:
+                force_ocr = True
 
     if is_native and not force_ocr:
         return pages, True
