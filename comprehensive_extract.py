@@ -7,11 +7,63 @@ Supports: English, Hindi, Odia, Tamil, Telugu, Kannada, Marathi, Gujarati.
 Reference format: VER_Tsupfume_2025-26.pdf (English, Nagaland)
 """
 import re
+import os
 import json
 from pathlib import Path
 from collections import OrderedDict
 
 import pdfplumber
+
+# Set OCR_FALLBACK=easyocr in environment to enable EasyOCR fallback on low-confidence
+# Tesseract pages for Indic scripts (Hindi, Marathi, Tamil, Telugu, Kannada, Bengali).
+# Requires: pip install easyocr (~500MB model, ~1GB RAM at runtime).
+# Not enabled on free Streamlit Cloud due to RAM limit.
+OCR_FALLBACK = os.environ.get("OCR_FALLBACK", "").lower()
+
+# EasyOCR language code mapping. Odia and Gujarati are NOT supported by EasyOCR
+# as of v1.7 — those languages stay on Tesseract.
+_EASYOCR_LANG_MAP = {
+    "Hindi": ["hi", "en"],
+    "Marathi": ["mr", "en"],
+    "Tamil": ["ta", "en"],
+    "Telugu": ["te", "en"],
+    "Kannada": ["kn", "en"],
+    "Bengali": ["bn", "en"],
+}
+
+_easyocr_readers = {}
+
+
+def _get_easyocr_reader(language: str):
+    """Lazy-load and cache an EasyOCR Reader. Returns None if unavailable."""
+    if OCR_FALLBACK != "easyocr":
+        return None
+    langs = _EASYOCR_LANG_MAP.get(language)
+    if not langs:
+        return None
+    key = tuple(langs)
+    if key in _easyocr_readers:
+        return _easyocr_readers[key]
+    try:
+        import easyocr
+        reader = easyocr.Reader(langs, gpu=False, verbose=False)
+        _easyocr_readers[key] = reader
+        return reader
+    except Exception as e:
+        print(f"EasyOCR unavailable: {e}")
+        _easyocr_readers[key] = None
+        return None
+
+
+def _easyocr_page(img_array, language: str) -> str:
+    reader = _get_easyocr_reader(language)
+    if reader is None:
+        return ""
+    try:
+        results = reader.readtext(img_array, detail=0, paragraph=True)
+        return "\n".join(results)
+    except Exception:
+        return ""
 
 # ── Language configuration ────────────────────────────────────
 
@@ -372,7 +424,7 @@ def extract_text_from_pdf(pdf_path: str, language: str = "Auto-detect",
             text = _ocr_page_optimized(pdf_path, i + 1, tess_lang, has_cv2,
                                        cv2 if has_cv2 else None,
                                        np if has_cv2 else None,
-                                       Image, pytesseract)
+                                       Image, pytesseract, language=language)
             pages.append(text)
         except Exception:
             pages.append("")
@@ -419,8 +471,10 @@ def _mean_confidence(data):
     return sum(confs) / len(confs) if confs else 0
 
 
-def _ocr_page_optimized(pdf_path, page_num, tess_lang, has_cv2, cv2, np, Image, pytesseract):
-    """Adaptive-DPI OCR: try 250 DPI first, escalate to 300 if confidence is low."""
+def _ocr_page_optimized(pdf_path, page_num, tess_lang, has_cv2, cv2, np, Image, pytesseract, language="English"):
+    """Adaptive-DPI OCR: try 250 DPI first, escalate to 300 if confidence is low.
+    Optional EasyOCR fallback for low-confidence Indic-script pages.
+    """
     images = convert_from_path(pdf_path, dpi=250,
                                first_page=page_num, last_page=page_num)
     if not images:
@@ -429,20 +483,23 @@ def _ocr_page_optimized(pdf_path, page_num, tess_lang, has_cv2, cv2, np, Image, 
     if img.mode != "L":
         img = img.convert("L")
 
+    proc_arr = None
     if has_cv2:
         arr = np.array(img)
         arr = _deskew(arr, cv2)
         arr = _preprocess(arr, cv2)
         img = Image.fromarray(arr)
+        proc_arr = arr
 
     data = pytesseract.image_to_data(img, lang=tess_lang,
                                      config='--oem 3 --psm 6',
                                      output_type=pytesseract.Output.DICT)
     text = " ".join(w for w in data.get("text", []) if w.strip())
     conf = _mean_confidence(data)
+    low_quality = conf < 60 or len(text.strip()) < 30
 
     # Escalate: low confidence or short text → retry at 300 DPI with PSM 4
-    if conf < 60 or len(text.strip()) < 30:
+    if low_quality:
         del images, img
         images = convert_from_path(pdf_path, dpi=300,
                                    first_page=page_num, last_page=page_num)
@@ -455,11 +512,18 @@ def _ocr_page_optimized(pdf_path, page_num, tess_lang, has_cv2, cv2, np, Image, 
                 arr = _deskew(arr, cv2)
                 arr = _preprocess(arr, cv2)
                 img2 = Image.fromarray(arr)
+                proc_arr = arr
             text_alt = pytesseract.image_to_string(img2, lang=tess_lang,
                                                    config='--oem 3 --psm 4')
             if len(text_alt.strip()) > len(text.strip()):
                 text = text_alt
             del img2
+
+    # EasyOCR fallback: only when Tesseract was poor AND language is supported
+    if low_quality and OCR_FALLBACK == "easyocr" and proc_arr is not None:
+        text_easy = _easyocr_page(proc_arr, language)
+        if len(text_easy.strip()) > len(text.strip()) * 1.2:
+            text = text_easy
 
     del images
     return text
