@@ -1210,6 +1210,220 @@ def parse_s20(text: str, record: dict):
     record["total_species_count"] = total_species
 
 
+# ── Native-table augmentation (PR2) ──────────────────────────
+
+_S20_SUB_MAP = {
+    "1": ("tree_diversity", "tree_diversity_count"),
+    "2": ("shrub_diversity", "shrub_diversity_count"),
+    "3": ("herb_grass_diversity", "herb_grass_diversity_count"),
+    "4": ("lower_plant_diversity", "lower_plant_count"),
+    "5": ("mammal_diversity", "mammal_count"),
+    "6": ("bird_diversity", "bird_count"),
+    "7": ("reptile_amphibian_diversity", "reptile_amphibian_count"),
+    "8": ("butterfly_diversity", "butterfly_count"),
+    "9": ("dragonfly_diversity", "dragonfly_count"),
+    "10": ("fish_insect_other_diversity", "fish_insect_other_count"),
+    "11": ("soil_macrofauna_diversity", "soil_macrofauna_count"),
+}
+
+_TABLE_NOISE = re.compile(
+    r'^(local\s+name|scientific\s+name|common\s+name|habitat|group|sl\.?\s*no|s\.?\s*no|'
+    r'name\s+of|english\s+name|tick|prepare|herbarium|remarks?|reasons?|number|'
+    r'forest|grazing|water|land\s*\(|cca|near|color|use|photoguide)', re.I)
+
+
+def _is_species_cell(cell: str) -> str | None:
+    """Return cleaned species name if cell looks like one, else None."""
+    if not cell:
+        return None
+    s = cell.strip()
+    if len(s) < 3 or len(s) > 80:
+        return None
+    if _TABLE_NOISE.match(s):
+        return None
+    if re.fullmatch(r'[\d\s\-√✔↑↓↔()/]+', s):
+        return None
+    sci = re.search(r'([A-Z][a-z]{2,})\s+([a-z]{2,})', s)
+    if sci:
+        return f"{sci.group(1)} {sci.group(2)}"
+    if len(s) > 2 and not s.startswith(("(", "√", "✔")):
+        cleaned = re.sub(r'[√✔↑↓↔]', '', s).strip()
+        if cleaned and not _TABLE_NOISE.match(cleaned):
+            return cleaned
+    return None
+
+
+def augment_with_native_tables(pdf_path: str, sections: dict, record: dict):
+    """Use pdfplumber.extract_tables() on native PDFs to enhance species/livestock/water data.
+    Non-destructive: only adds entries the regex parser missed.
+    """
+    try:
+        with pdfplumber.open(pdf_path) as pdf:
+            _augment_s20(pdf, sections.get("s20"), record)
+            _augment_s5(pdf, sections.get("s5"), record)
+            _augment_s6(pdf, sections.get("s6"), record)
+    except Exception as e:
+        print(f"Table augmentation skipped: {e}")
+
+
+def _augment_s20(pdf, page_range, record):
+    if not page_range:
+        return
+    start, end = page_range
+    species_per_sub = {k: [] for k in _S20_SUB_MAP}
+    seen_per_sub = {k: set() for k in _S20_SUB_MAP}
+    current_sub = None
+
+    for page_idx in range(start, min(end + 1, len(pdf.pages))):
+        page = pdf.pages[page_idx]
+        page_text = page.extract_text() or ""
+        sub_match = re.search(r'20\.(\d+)\b', page_text)
+        if sub_match and sub_match.group(1) in _S20_SUB_MAP:
+            current_sub = sub_match.group(1)
+        if current_sub is None:
+            continue
+
+        try:
+            tables = page.extract_tables() or []
+        except Exception:
+            tables = []
+
+        for table in tables:
+            for row in table:
+                if not row:
+                    continue
+                for cell in row:
+                    name = _is_species_cell(cell)
+                    if name:
+                        key = name.lower()
+                        if key not in seen_per_sub[current_sub]:
+                            seen_per_sub[current_sub].add(key)
+                            species_per_sub[current_sub].append(name)
+
+    total = 0
+    for sub_num, (field, count_field) in _S20_SUB_MAP.items():
+        new_list = species_per_sub[sub_num]
+        existing_str = record.get(field) or ""
+        existing = [e.strip() for e in existing_str.split(";") if e.strip()]
+        existing_lower = {e.lower() for e in existing}
+        merged = existing + [n for n in new_list if n.lower() not in existing_lower]
+        merged = merged[:100]
+        if len(merged) > len(existing):
+            record[field] = "; ".join(merged)
+            record[count_field] = len(merged)
+        total += record.get(count_field, 0) or 0
+    if total > 0:
+        record["total_species_count"] = total
+
+
+_LIVESTOCK_KEYWORDS = {
+    "cow": "Cows", "indigenous cow": "Cows", "hybrid cow": "Hybrid Cow",
+    "ox": "Oxen", "oxen": "Oxen", "buffalo": "Buffaloes", "goat": "Goat",
+    "sheep": "Sheep", "pig": "Pig", "poultry": "Poultry", "duck": "Duckery",
+    "mithun": "Mithun", "rabbit": "Rabbit", "horse": "Horse",
+    "donkey": "Donkey", "camel": "Camel",
+}
+
+
+def _augment_s5(pdf, page_range, record):
+    if not page_range:
+        return
+    start, end = page_range
+    counts = {}
+    for page_idx in range(start, min(end + 1, len(pdf.pages))):
+        page = pdf.pages[page_idx]
+        try:
+            tables = page.extract_tables() or []
+        except Exception:
+            continue
+        for table in tables:
+            for row in table:
+                if not row or len(row) < 2:
+                    continue
+                label_cell = (row[0] or "").strip().lower()
+                if not label_cell:
+                    continue
+                short = None
+                for kw, label in _LIVESTOCK_KEYWORDS.items():
+                    if kw in label_cell:
+                        short = label
+                        break
+                if not short:
+                    continue
+                for cell in row[1:]:
+                    if cell is None:
+                        continue
+                    m = re.search(r'\b(\d{1,5})\b', str(cell))
+                    if m:
+                        counts[short] = max(counts.get(short, 0), int(m.group(1)))
+                        break
+    if not counts:
+        return
+    existing = record.get("livestock_summary") or ""
+    pairs = dict(re.findall(r'([A-Za-z ]+):(\d+)', existing))
+    pairs = {k.strip(): int(v) for k, v in pairs.items()}
+    for short, val in counts.items():
+        if val > pairs.get(short, 0):
+            pairs[short] = val
+    record["livestock_summary"] = "; ".join(f"{k}:{v}" for k, v in pairs.items() if v > 0)
+
+
+_WATER_KEYWORDS = {
+    "tap": "Tap", "tube": "Tubewell", "borewell": "Tubewell", "bore well": "Tubewell",
+    "open well": "Open Well", "well": "Open Well", "spring": "Spring",
+    "river": "River", "stream": "Stream", "pond": "Pond", "tank": "Tank",
+}
+
+
+def _augment_s6(pdf, page_range, record):
+    if not page_range:
+        return
+    start, end = page_range
+    drinking, livestock_water = {}, {}
+    section_marker = "drinking"
+
+    for page_idx in range(start, min(end + 1, len(pdf.pages))):
+        page = pdf.pages[page_idx]
+        page_text = (page.extract_text() or "").lower()
+        if "6.2" in page_text and ("livestock" in page_text or "ପଶୁ" in page_text or "पशु" in page_text):
+            section_marker = "livestock"
+        try:
+            tables = page.extract_tables() or []
+        except Exception:
+            continue
+        target = drinking if section_marker == "drinking" else livestock_water
+        for table in tables:
+            for row in table:
+                if not row or len(row) < 2:
+                    continue
+                label = (row[0] or "").strip().lower()
+                short = None
+                for kw, lbl in _WATER_KEYWORDS.items():
+                    if kw in label:
+                        short = lbl
+                        break
+                if not short:
+                    continue
+                for cell in row[1:]:
+                    m = re.search(r'\b(\d{1,4})\b', str(cell or ""))
+                    if m:
+                        target[short] = max(target.get(short, 0), int(m.group(1)))
+                        break
+
+    def _merge(existing_str, new_counts):
+        pairs = dict(re.findall(r'([A-Za-z ]+):(\d+)', existing_str or ""))
+        pairs = {k.strip(): int(v) for k, v in pairs.items()}
+        for k, v in new_counts.items():
+            if v > pairs.get(k, 0):
+                pairs[k] = v
+        return "; ".join(f"{k}:{v}" for k, v in pairs.items() if v > 0)
+
+    if drinking:
+        record["drinking_water_sources"] = _merge(record.get("drinking_water_sources"), drinking)
+    if livestock_water:
+        record["livestock_water_sources"] = _merge(record.get("livestock_water_sources"), livestock_water)
+
+
 # ── Main extraction function ─────────────────────────────────
 
 def extract_village(pdf_path: str, language: str = "Auto-detect",
@@ -1278,6 +1492,10 @@ def extract_village(pdf_path: str, language: str = "Auto-detect",
                 parser(text, record)
             except Exception as e:
                 print(f"Warning: Error parsing {key}: {e}")
+
+    if is_native:
+        progress(9, 10, "Augmenting from native tables...")
+        augment_with_native_tables(pdf_path, sections, record)
 
     # Bamboo (part of section 15)
     s15_text = get_section_text(pages, sections, "s15")
