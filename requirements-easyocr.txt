@@ -1,0 +1,16 @@
+# Optional: EasyOCR fallback for low-confidence Indic-script pages
+# Adds ~500MB model download + ~1GB RAM at runtime — does NOT fit free Streamlit Cloud (1GB total).
+# Use only on self-hosted or paid hosting.
+#
+# To enable:
+#   pip install -r requirements-easyocr.txt
+#   export OCR_FALLBACK=easyocr
+#   streamlit run app.py
+#
+# Supported languages: Hindi, Marathi, Tamil, Telugu, Kannada, Bengali.
+# NOT supported by EasyOCR: Odia, Gujarati (those stay on Tesseract).
+
+-r requirements.txt
+easyocr>=1.7.0
+torch>=2.0.0
+torchvision>=0.15.0

@@ -56,6 +56,21 @@ streamlit run app.py
 | Chhattisgarh | Hindi + English | Devanagari | Planned |
 | Rajasthan | Hindi + English | Devanagari | Planned |
 
+## Optional: EasyOCR fallback for Indic scripts
+
+For better accuracy on Hindi, Marathi, Tamil, Telugu, Kannada, or Bengali pages with handwriting, you can enable an EasyOCR fallback. It runs only when Tesseract confidence is low.
+
+```bash
+pip install -r requirements-easyocr.txt
+export OCR_FALLBACK=easyocr
+streamlit run app.py
+```
+
+Notes:
+- Adds ~500MB model + ~1GB RAM at runtime — does **not** fit on free Streamlit Cloud.
+- Odia and Gujarati are not supported by EasyOCR and stay on Tesseract.
+- Fully open source (Apache 2.0). No API keys, no cost.
+
 ## About VER
 
 The Village Ecological Register is a citizen science document prepared by community members across ~200 Indian villages in 7+ states. It captures traditional ecological knowledge, biodiversity data, and socio-ecological changes spanning 50+ years.
