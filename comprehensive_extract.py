@@ -6,19 +6,25 @@ Supports: English, Hindi, Odia, Tamil, Telugu, Kannada, Marathi, Gujarati.
 
 Reference format: VER_Tsupfume_2025-26.pdf (English, Nagaland)
 """
+import io
 import re
 import os
 import json
+import base64
+import urllib.request
+import urllib.error
 from pathlib import Path
 from collections import OrderedDict
 
 import pdfplumber
 
-# Set OCR_FALLBACK=easyocr in environment to enable EasyOCR fallback on low-confidence
-# Tesseract pages for Indic scripts (Hindi, Marathi, Tamil, Telugu, Kannada, Bengali).
-# Requires: pip install easyocr (~500MB model, ~1GB RAM at runtime).
-# Not enabled on free Streamlit Cloud due to RAM limit.
+# OCR_FALLBACK selects an alternate engine for low-confidence Tesseract pages on Indic scripts.
+#   easyocr   — local, ~1GB RAM (does not fit free Streamlit Cloud)
+#   bhashini  — Indian Govt API, free for citizen-science. Requires BHASHINI_USER_ID + BHASHINI_API_KEY.
+#   <empty>   — disabled (default)
 OCR_FALLBACK = os.environ.get("OCR_FALLBACK", "").lower()
+BHASHINI_USER_ID = os.environ.get("BHASHINI_USER_ID", "")
+BHASHINI_API_KEY = os.environ.get("BHASHINI_API_KEY", "")
 
 # EasyOCR language code mapping. Odia and Gujarati are NOT supported by EasyOCR
 # as of v1.7 — those languages stay on Tesseract.
@@ -64,6 +70,89 @@ def _easyocr_page(img_array, language: str) -> str:
         return "\n".join(results)
     except Exception:
         return ""
+
+
+# ── Bhashini ULCA OCR fallback (free, Indian Govt) ────────────
+
+_BHASHINI_LANG_MAP = {
+    "Hindi": "hi", "Marathi": "mr", "Tamil": "ta", "Telugu": "te",
+    "Kannada": "kn", "Bengali": "bn", "Odia": "or", "Gujarati": "gu",
+    "English": "en",
+}
+_BHASHINI_PIPELINE_CACHE = {}
+_BHASHINI_CONFIG_URL = "https://meity-auth.ulcacontrib.org/ulca/apis/v0/model/getModelsPipeline"
+_BHASHINI_DEFAULT_PIPELINE_ID = "64392f96daac500b55c543cd"
+
+
+def _http_post_json(url: str, payload: dict, headers: dict, timeout: int = 30) -> dict:
+    body = json.dumps(payload).encode("utf-8")
+    h = {"Content-Type": "application/json", **headers}
+    req = urllib.request.Request(url, data=body, headers=h, method="POST")
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _bhashini_get_pipeline(lang_code: str) -> dict | None:
+    """Fetch + cache the OCR inference endpoint and auth token for a language."""
+    if lang_code in _BHASHINI_PIPELINE_CACHE:
+        return _BHASHINI_PIPELINE_CACHE[lang_code]
+    if not BHASHINI_USER_ID or not BHASHINI_API_KEY:
+        return None
+    payload = {
+        "pipelineTasks": [{"taskType": "ocr",
+                           "config": {"language": {"sourceLanguage": lang_code}}}],
+        "pipelineRequestConfig": {"pipelineId": _BHASHINI_DEFAULT_PIPELINE_ID},
+    }
+    headers = {"userID": BHASHINI_USER_ID, "ulcaApiKey": BHASHINI_API_KEY}
+    try:
+        resp = _http_post_json(_BHASHINI_CONFIG_URL, payload, headers)
+        endpoint = resp["pipelineInferenceAPIEndPoint"]
+        info = {
+            "callback_url": endpoint["callbackUrl"],
+            "auth_name": endpoint["inferenceApiKey"]["name"],
+            "auth_value": endpoint["inferenceApiKey"]["value"],
+            "service_id": resp["pipelineResponseConfig"][0]["config"][0]["serviceId"],
+        }
+        _BHASHINI_PIPELINE_CACHE[lang_code] = info
+        return info
+    except Exception as e:
+        print(f"Bhashini pipeline init failed for {lang_code}: {e}")
+        _BHASHINI_PIPELINE_CACHE[lang_code] = None
+        return None
+
+
+def _bhashini_page(img_pil, language: str) -> str:
+    """OCR a page via Bhashini ULCA. Returns empty string on any failure."""
+    if OCR_FALLBACK != "bhashini":
+        return ""
+    lang_code = _BHASHINI_LANG_MAP.get(language)
+    if not lang_code:
+        return ""
+    info = _bhashini_get_pipeline(lang_code)
+    if not info:
+        return ""
+    try:
+        buf = io.BytesIO()
+        img_pil.save(buf, format="PNG")
+        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+        payload = {
+            "pipelineTasks": [{"taskType": "ocr",
+                               "config": {"language": {"sourceLanguage": lang_code},
+                                          "serviceId": info["service_id"]}}],
+            "inputData": {"input": [{"source": ""}],
+                          "image": [{"imageContent": b64}]},
+        }
+        headers = {info["auth_name"]: info["auth_value"]}
+        resp = _http_post_json(info["callback_url"], payload, headers, timeout=60)
+        outputs = resp.get("pipelineResponse", [])
+        if not outputs:
+            return ""
+        first = outputs[0].get("output", [])
+        return "\n".join(o.get("source", "") for o in first if o.get("source"))
+    except Exception as e:
+        print(f"Bhashini OCR failed: {e}")
+        return ""
+
 
 # ── Language configuration ────────────────────────────────────
 
@@ -524,6 +613,12 @@ def _ocr_page_optimized(pdf_path, page_num, tess_lang, has_cv2, cv2, np, Image, 
         text_easy = _easyocr_page(proc_arr, language)
         if len(text_easy.strip()) > len(text.strip()) * 1.2:
             text = text_easy
+
+    # Bhashini fallback: only when Tesseract was poor AND language is supported
+    if low_quality and OCR_FALLBACK == "bhashini":
+        text_bha = _bhashini_page(img, language)
+        if len(text_bha.strip()) > len(text.strip()) * 1.2:
+            text = text_bha
 
     del images
     return text
