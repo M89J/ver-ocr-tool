@@ -4,6 +4,7 @@ Stores village records in data/ver_database.json and syncs to GitHub
 so data persists across Streamlit Cloud redeployments.
 Data is append-only — no delete operations.
 """
+import re
 import json
 import base64
 import urllib.request
@@ -11,6 +12,64 @@ import urllib.error
 from pathlib import Path
 from datetime import datetime
 from collections import OrderedDict
+
+
+# Fields whose value is a "; "-separated list of species/items.
+# When merging, take the UNION of old and new entries (case-insensitive dedup).
+# The paired *_count field is recomputed after the union.
+LIST_FIELDS = {
+    "tree_diversity": "tree_diversity_count",
+    "shrub_diversity": "shrub_diversity_count",
+    "herb_grass_diversity": "herb_grass_diversity_count",
+    "lower_plant_diversity": "lower_plant_count",
+    "mammal_diversity": "mammal_count",
+    "bird_diversity": "bird_count",
+    "reptile_amphibian_diversity": "reptile_amphibian_count",
+    "butterfly_diversity": "butterfly_count",
+    "dragonfly_diversity": "dragonfly_count",
+    "fish_insect_other_diversity": "fish_insect_other_count",
+    "soil_macrofauna_diversity": "soil_macrofauna_count",
+}
+
+# Fields whose value is a "; "-separated list of "label:count" pairs.
+# When merging, take max(old, new) per label.
+COUNTED_PAIR_FIELDS = {
+    "livestock_summary",
+    "livestock_detailed",
+    "drinking_water_sources",
+    "livestock_water_sources",
+}
+
+
+def _split_list(s: str) -> list[str]:
+    if not s:
+        return []
+    return [p.strip() for p in str(s).split(";") if p.strip()]
+
+
+def _merge_list_field(old_str: str, new_str: str, max_items: int = 100) -> tuple[str, int]:
+    """Union of "; "-separated lists, dedup case-insensitively, preserve insertion order."""
+    seen = set()
+    merged = []
+    for item in _split_list(old_str) + _split_list(new_str):
+        key = item.lower().strip()
+        if key and key not in seen:
+            seen.add(key)
+            merged.append(item)
+    merged = merged[:max_items]
+    return "; ".join(merged), len(merged)
+
+
+def _merge_counted_pairs(old_str: str, new_str: str) -> str:
+    """Per label, keep max(old, new). Preserves order from old then appends new labels."""
+    pat = re.compile(r'([A-Za-z][A-Za-z ]*?):\s*(\d+)')
+    old_pairs = OrderedDict()
+    for k, v in pat.findall(old_str or ""):
+        old_pairs[k.strip()] = int(v)
+    for k, v in pat.findall(new_str or ""):
+        key = k.strip()
+        old_pairs[key] = max(old_pairs.get(key, 0), int(v))
+    return "; ".join(f"{k}:{v}" for k, v in old_pairs.items() if v > 0)
 
 DB_FILE = Path(__file__).parent / "data" / "ver_database.json"
 
@@ -176,12 +235,33 @@ def upsert_village(record: dict, github_token: str = "", github_repo: str = "") 
 
         for key, new_val in record.items():
             if key.startswith("_"):
-                continue  # never overwrite internal fields
+                continue
             old_val = existing.get(key, "")
-            # Prefer new value if it's non-empty and non-zero
+
+            # Multi-value species lists → union (preserves accumulated knowledge)
+            if key in LIST_FIELDS:
+                merged_str, count = _merge_list_field(old_val, new_val)
+                merged[key] = merged_str
+                merged[LIST_FIELDS[key]] = count
+                continue
+
+            # Counted-pair lists (livestock, water) → per-label max
+            if key in COUNTED_PAIR_FIELDS:
+                merged[key] = _merge_counted_pairs(old_val, new_val)
+                continue
+
+            # Skip *_count fields — recomputed alongside their *_diversity field above
+            if key.endswith("_count") and key != "total_pages":
+                continue
+
+            # Default scalar/text behavior — prefer non-empty / non-zero new value
             if new_val and new_val != 0:
                 merged[key] = new_val
-            # else keep old value (already in merged)
+
+        # Recompute total_species_count from the merged *_count fields
+        merged["total_species_count"] = sum(
+            int(merged.get(c, 0) or 0) for c in LIST_FIELDS.values()
+        )
 
         merged["_updated_at"] = datetime.now().isoformat()
         db["villages"][existing_idx] = merged
