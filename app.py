@@ -10,6 +10,7 @@ import streamlit as st
 import pandas as pd
 import os
 import sys
+import re
 import json
 import tempfile
 import hashlib
@@ -17,6 +18,26 @@ from pathlib import Path
 from io import BytesIO
 from datetime import datetime
 from collections import OrderedDict
+
+
+_NAME_NOISE = {"ver", "of", "the", "a", "an", "village", "villages", "gram",
+               "panchayat", "pdf", "data", "register", "ecological", "rev"}
+
+
+def _village_name_from_filename(filename: str) -> str:
+    """Robust filename → village name. Handles VER_<Name>.pdf, VER_of_<Name>_Village.pdf,
+    Village Ecological Register - Manjari.pdf, and so on.
+    """
+    stem = Path(filename).stem
+    m = re.match(r'(?i)\s*VER[_\s\-]+(?:of[_\s\-]+)?([A-Za-z][A-Za-z]+)(?:[_\s\-]+(?:Village|Gram))?',
+                 stem)
+    if m and m.group(1).lower() not in _NAME_NOISE:
+        return m.group(1).title()
+    tokens = [t for t in re.split(r'[_\s\-.]+', stem) if t.isalpha()]
+    candidates = [t for t in tokens if t.lower() not in _NAME_NOISE and len(t) >= 3]
+    if candidates:
+        return max(candidates, key=len).title()
+    return ""
 
 sys.path.insert(0, str(Path(__file__).parent))
 from comprehensive_extract import extract_village, get_empty_record, MASTER_FIELDS, SUPPORTED_LANGUAGES
@@ -1096,9 +1117,11 @@ with tab_manage:
                     new_count, update_count = getattr(st.session_state, '_upload_new', 0), getattr(st.session_state, '_upload_update', 0)
                     try:
                         record = _extract_with_cache(pdf_bytes, selected_language, progress_cb)
-                        if not record.get("village_name"):
-                            name_from_file = Path(file_label).stem.replace("VER_","").replace("_"," ")
-                            record["village_name"] = name_from_file.split(" ")[0]
+                        bad_name = (record.get("village_name") or "").strip().lower() in _NAME_NOISE
+                        if not record.get("village_name") or bad_name:
+                            inferred = _village_name_from_filename(file_label)
+                            if inferred:
+                                record["village_name"] = inferred
 
                         # Store PDF filename in record
                         record["pdf_filename"] = file_label
