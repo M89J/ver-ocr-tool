@@ -12,6 +12,7 @@ import os
 import sys
 import json
 import tempfile
+import hashlib
 from pathlib import Path
 from io import BytesIO
 from datetime import datetime
@@ -19,6 +20,28 @@ from collections import OrderedDict
 
 sys.path.insert(0, str(Path(__file__).parent))
 from comprehensive_extract import extract_village, get_empty_record, MASTER_FIELDS, SUPPORTED_LANGUAGES
+
+
+def _extract_with_cache(pdf_bytes: bytes, language: str, progress_cb=None):
+    """Re-uploading the same PDF returns instantly from session-state cache."""
+    if "extract_cache" not in st.session_state:
+        st.session_state.extract_cache = {}
+    file_hash = hashlib.sha1(pdf_bytes).hexdigest()
+    cache_key = (file_hash, language)
+    if cache_key in st.session_state.extract_cache:
+        return st.session_state.extract_cache[cache_key]
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+        tmp.write(pdf_bytes)
+        tmp_path = tmp.name
+    try:
+        record = extract_village(tmp_path, language=language, progress_callback=progress_cb)
+        st.session_state.extract_cache[cache_key] = record
+        return record
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
 from github_db import (
     load_all_villages, upsert_village,
     import_villages, sync_to_github, get_village_count,
@@ -1060,9 +1083,8 @@ with tab_manage:
                 status_text = st.empty()
 
                 for file_idx, uploaded_file in enumerate(uploaded_files):
-                    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
-                        tmp.write(uploaded_file.read())
-                        tmp_path = tmp.name
+                    uploaded_file.seek(0)
+                    pdf_bytes = uploaded_file.read()
 
                     file_label = uploaded_file.name
 
@@ -1073,7 +1095,7 @@ with tab_manage:
                     status_text.markdown(f"Processing **{file_label}**...")
                     new_count, update_count = getattr(st.session_state, '_upload_new', 0), getattr(st.session_state, '_upload_update', 0)
                     try:
-                        record = extract_village(tmp_path, language=selected_language, progress_callback=progress_cb)
+                        record = _extract_with_cache(pdf_bytes, selected_language, progress_cb)
                         if not record.get("village_name"):
                             name_from_file = Path(file_label).stem.replace("VER_","").replace("_"," ")
                             record["village_name"] = name_from_file.split(" ")[0]
@@ -1083,8 +1105,6 @@ with tab_manage:
 
                         # Upload raw PDF to GitHub for review
                         if GH_TOKEN and GH_REPO:
-                            uploaded_file.seek(0)
-                            pdf_bytes = uploaded_file.read()
                             upload_pdf_to_github(pdf_bytes, file_label, GH_TOKEN, GH_REPO)
 
                         vid, was_update = upsert_village(record, github_token=GH_TOKEN, github_repo=GH_REPO)
@@ -1094,8 +1114,6 @@ with tab_manage:
                             new_count += 1
                     except Exception as e:
                         st.error(f"Error processing {file_label}: {e}")
-                    finally:
-                        os.unlink(tmp_path)
 
                 progress_bar.progress(1.0, text="All PDFs processed!")
                 # Reload from database to ensure session matches persistent store

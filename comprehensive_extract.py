@@ -356,16 +356,11 @@ def extract_text_from_pdf(pdf_path: str, language: str = "Auto-detect",
     except ImportError:
         has_cv2 = False
 
-    # Keep native text pages, OCR only blank ones
-    # Exception: when force_ocr is set (non-Latin scripts), OCR ALL pages because
-    # pdfplumber's native text is garbled for Devanagari/Odia/etc.
-    native_pages = pages  # preserve native text from first pass
+    native_pages = pages
     pages = []
     total = len(native_pages)
 
     for i in range(total):
-        # Skip pages that already have native text (saves OCR time)
-        # But NOT when force_ocr — native text is unreliable for non-Latin scripts
         if not force_ocr and len(native_pages[i].strip()) > 50:
             pages.append(native_pages[i])
             continue
@@ -374,53 +369,100 @@ def extract_text_from_pdf(pdf_path: str, language: str = "Auto-detect",
             progress_callback(i, total, f"OCR page {i+1}/{total} ({tess_lang})...")
 
         try:
-            images = convert_from_path(pdf_path, dpi=300,
-                                       first_page=i+1, last_page=i+1)
-            if not images:
-                pages.append("")
-                continue
-
-            img = images[0]
-
-            # Convert to grayscale
-            if img.mode != "L":
-                img = img.convert("L")
-
-            # Apply enhancement if OpenCV available
-            if has_cv2:
-                img_array = np.array(img)
-                # Denoise
-                denoised = cv2.fastNlMeansDenoising(img_array, None, h=10,
-                                                     templateWindowSize=7, searchWindowSize=21)
-                # CLAHE for contrast
-                clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-                enhanced = clahe.apply(denoised)
-                # Morphological cleanup: remove small noise, preserve text
-                kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
-                enhanced = cv2.morphologyEx(enhanced, cv2.MORPH_CLOSE, kernel)
-                # Adaptive threshold
-                binary = cv2.adaptiveThreshold(enhanced, 255,
-                                               cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                               cv2.THRESH_BINARY, blockSize=15, C=8)
-                img = Image.fromarray(binary)
-
-            # Run Tesseract with PSM 6 (uniform block), fallback to PSM 4 (multi-column)
-            text = pytesseract.image_to_string(img, lang=tess_lang,
-                                                config='--oem 3 --psm 6')
-            if len(text.strip()) < 30:
-                text_alt = pytesseract.image_to_string(img, lang=tess_lang,
-                                                        config='--oem 3 --psm 4')
-                if len(text_alt.strip()) > len(text.strip()):
-                    text = text_alt
-
+            text = _ocr_page_optimized(pdf_path, i + 1, tess_lang, has_cv2,
+                                       cv2 if has_cv2 else None,
+                                       np if has_cv2 else None,
+                                       Image, pytesseract)
             pages.append(text)
-
-            # Free memory
-            del images, img
         except Exception:
             pages.append("")
 
     return pages, False
+
+
+def _deskew(img_array, cv2):
+    """Detect text skew and rotate to correct it. Returns deskewed array."""
+    try:
+        coords = cv2.findNonZero(cv2.bitwise_not(img_array))
+        if coords is None or len(coords) < 100:
+            return img_array
+        angle = cv2.minAreaRect(coords)[-1]
+        if angle < -45:
+            angle = -(90 + angle)
+        else:
+            angle = -angle
+        if abs(angle) < 0.5:
+            return img_array
+        h, w = img_array.shape[:2]
+        M = cv2.getRotationMatrix2D((w // 2, h // 2), angle, 1.0)
+        return cv2.warpAffine(img_array, M, (w, h),
+                              flags=cv2.INTER_CUBIC,
+                              borderMode=cv2.BORDER_REPLICATE)
+    except Exception:
+        return img_array
+
+
+def _preprocess(img_array, cv2):
+    """Fast preprocessing: bilateral filter + CLAHE + adaptive threshold."""
+    # Bilateral filter — edge-preserving denoise, ~10x faster than fastNlMeans
+    denoised = cv2.bilateralFilter(img_array, d=5, sigmaColor=75, sigmaSpace=75)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    enhanced = clahe.apply(denoised)
+    binary = cv2.adaptiveThreshold(enhanced, 255,
+                                   cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                   cv2.THRESH_BINARY, blockSize=15, C=8)
+    return binary
+
+
+def _mean_confidence(data):
+    confs = [int(c) for c in data.get("conf", []) if str(c).lstrip("-").isdigit() and int(c) >= 0]
+    return sum(confs) / len(confs) if confs else 0
+
+
+def _ocr_page_optimized(pdf_path, page_num, tess_lang, has_cv2, cv2, np, Image, pytesseract):
+    """Adaptive-DPI OCR: try 250 DPI first, escalate to 300 if confidence is low."""
+    images = convert_from_path(pdf_path, dpi=250,
+                               first_page=page_num, last_page=page_num)
+    if not images:
+        return ""
+    img = images[0]
+    if img.mode != "L":
+        img = img.convert("L")
+
+    if has_cv2:
+        arr = np.array(img)
+        arr = _deskew(arr, cv2)
+        arr = _preprocess(arr, cv2)
+        img = Image.fromarray(arr)
+
+    data = pytesseract.image_to_data(img, lang=tess_lang,
+                                     config='--oem 3 --psm 6',
+                                     output_type=pytesseract.Output.DICT)
+    text = " ".join(w for w in data.get("text", []) if w.strip())
+    conf = _mean_confidence(data)
+
+    # Escalate: low confidence or short text → retry at 300 DPI with PSM 4
+    if conf < 60 or len(text.strip()) < 30:
+        del images, img
+        images = convert_from_path(pdf_path, dpi=300,
+                                   first_page=page_num, last_page=page_num)
+        if images:
+            img2 = images[0]
+            if img2.mode != "L":
+                img2 = img2.convert("L")
+            if has_cv2:
+                arr = np.array(img2)
+                arr = _deskew(arr, cv2)
+                arr = _preprocess(arr, cv2)
+                img2 = Image.fromarray(arr)
+            text_alt = pytesseract.image_to_string(img2, lang=tess_lang,
+                                                   config='--oem 3 --psm 4')
+            if len(text_alt.strip()) > len(text.strip()):
+                text = text_alt
+            del img2
+
+    del images
+    return text
 
 
 def find_section_ranges(pages: list[str]) -> dict:
