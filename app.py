@@ -980,7 +980,7 @@ with tab_reports:
 
         # ── AI Analysis ──
         with report_sub[1]:
-            st.markdown('<div class="section-hdr">AI-Powered Analysis (Gemini)</div>', unsafe_allow_html=True)
+            st.markdown('<div class="section-hdr">AI-Powered Analysis (Groq)</div>', unsafe_allow_html=True)
             ai_names = [r.get("village_name", f"V{i+1}") for i,r in enumerate(records)]
             ai_sel = st.selectbox("Village", ai_names, key="ai_village")
             ai_rec = records[ai_names.index(ai_sel)]
@@ -998,16 +998,16 @@ with tab_reports:
 
             api_key = ""
             try:
-                api_key = st.secrets.get("GEMINI_API_KEY", "")
+                api_key = st.secrets.get("GROQ_API_KEY", "")
             except Exception:
                 pass
             if not api_key:
-                api_key = st.text_input("Gemini API Key", type="password",
-                    help="Get free key from aistudio.google.com. Or add GEMINI_API_KEY to Streamlit secrets.", key="ai_key")
+                api_key = st.text_input("Groq API Key", type="password",
+                    help="Get free key from console.groq.com. Or add GROQ_API_KEY to Streamlit secrets.", key="ai_key")
 
             if st.button("Analyze", type="primary", use_container_width=True, key="ai_analyze"):
                 if not api_key:
-                    st.warning("Enter your Gemini API key above, or add GEMINI_API_KEY in Streamlit Cloud secrets.")
+                    st.warning("Enter your Groq API key above, or add GROQ_API_KEY in Streamlit Cloud secrets.")
                 else:
                     context = build_village_context(ai_rec)
                     prompt = f"""You are an ecologist analyzing Village Ecological Register (VER) data from India.
@@ -1016,16 +1016,19 @@ Village Data:
 {context}
 
 Task: {ai_prompts[ai_type]}"""
-                    with st.spinner("Analyzing with Gemini..."):
+                    with st.spinner("Analyzing with Groq..."):
                         try:
-                            import google.generativeai as genai
-                            genai.configure(api_key=api_key)
-                            model = genai.GenerativeModel("gemini-2.5-flash")
-                            response = model.generate_content(prompt)
+                            from groq import Groq
+                            client = Groq(api_key=api_key)
+                            response = client.chat.completions.create(
+                                model="llama-3.3-70b-versatile",
+                                messages=[{"role": "user", "content": prompt}],
+                                temperature=0.3,
+                            )
                             st.markdown(f"**{ai_type} — {ai_rec.get('village_name','')}**")
-                            st.markdown(response.text)
+                            st.markdown(response.choices[0].message.content)
                         except ImportError:
-                            st.error("google-generativeai package not installed.")
+                            st.error("groq package not installed. Add 'groq>=0.11.0' to requirements.txt.")
                         except Exception as e:
                             st.error(f"Analysis failed: {e}")
 
