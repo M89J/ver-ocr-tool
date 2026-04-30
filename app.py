@@ -1020,7 +1020,7 @@ Task: {ai_prompts[ai_type]}"""
                         try:
                             import google.generativeai as genai
                             genai.configure(api_key=api_key)
-                            model = genai.GenerativeModel("gemini-1.5-flash")
+                            model = genai.GenerativeModel("gemini-2.5-flash")
                             response = model.generate_content(prompt)
                             st.markdown(f"**{ai_type} — {ai_rec.get('village_name','')}**")
                             st.markdown(response.text)
