@@ -647,12 +647,48 @@ def find_section_ranges(pages: list[str]) -> dict:
         if len(toc_pat.findall(text)) >= 3:
             toc_pages.add(i)
 
+    # Strict header pattern used for pass 1 — must look like an actual section heading
+    # (literal "Section - N" / "विभाग - N" / "ବିଭାଗ - N", anchored at line start where possible).
+    odia_nums = {"2": "୨(?!୦)", "3": "୩", "4": "୪", "5": "୫", "6": "୬", "7": "୭",
+                 "8": "୮", "9": "୯", "10": "୧୦", "11": "୧୧", "12": "୧୨",
+                 "13": "୧୩", "14": "୧୪", "15": "୧୫", "16": "୧୬", "17": "୧୭",
+                 "18": "୧୮", "19": "୧୯", "20": "୨୦"}
+    hindi_nums = {"2": "२", "3": "३", "4": "४", "5": "५", "6": "६", "7": "७",
+                  "8": "८", "9": "९", "10": "१०", "11": "११", "12": "१२",
+                  "13": "१३", "14": "१४", "15": "१५", "16": "१६", "17": "१७",
+                  "18": "१८", "19": "१९", "20": "२०"}
+
+    def _strict_header(num):
+        alts = [rf'(?m)^\s*Section\s*[-–—]\s*{num}(?!\d)\b',
+                rf'Section\s*[-–—]\s*{num}(?!\d)\s+[A-Z]']
+        if num in odia_nums:
+            alts.append(rf'ବିଭାଗ\s*[-–—]\s*{odia_nums[num]}')
+        if num in hindi_nums:
+            alts.append(rf'(?:विभाग|భాగం|பகுதி|ವಿಭಾಗ)\s*[-–—]\s*{hindi_nums[num]}')
+        return re.compile("|".join(alts), re.I)
+
     sections = {}
-    for key, pat in section_patterns:
+
+    # Pass 1: strict "Section - N" header detection (anchored to heading lines).
+    # This is the highest-confidence signal and beats stray prose matches.
+    for key, _pat in section_patterns:
+        num = key[1:]
+        strict = _strict_header(num)
         for i, text in enumerate(pages):
             if i in toc_pages:
                 continue
-            if pat.search(text) and key not in sections:
+            if strict.search(text):
+                sections[key] = {"start": i}
+                break
+
+    # Pass 2: fallback to broader keyword/subsection patterns ONLY for missing sections.
+    for key, pat in section_patterns:
+        if key in sections:
+            continue
+        for i, text in enumerate(pages):
+            if i in toc_pages:
+                continue
+            if pat.search(text):
                 sections[key] = {"start": i}
                 break
 
