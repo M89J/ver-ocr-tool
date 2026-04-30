@@ -56,9 +56,11 @@ streamlit run app.py
 | Chhattisgarh | Hindi + English | Devanagari | Planned |
 | Rajasthan | Hindi + English | Devanagari | Planned |
 
-## Optional: EasyOCR fallback for Indic scripts
+## Optional: better OCR for Indic scripts
 
-For better accuracy on Hindi, Marathi, Tamil, Telugu, Kannada, or Bengali pages with handwriting, you can enable an EasyOCR fallback. It runs only when Tesseract confidence is low.
+Two fallback engines are wired in. Both kick in **only when Tesseract confidence is low** — so they never slow down high-quality pages. Choose one via `OCR_FALLBACK`.
+
+### Option 1 — EasyOCR (local, no API)
 
 ```bash
 pip install -r requirements-easyocr.txt
@@ -66,10 +68,24 @@ export OCR_FALLBACK=easyocr
 streamlit run app.py
 ```
 
-Notes:
-- Adds ~500MB model + ~1GB RAM at runtime — does **not** fit on free Streamlit Cloud.
-- Odia and Gujarati are not supported by EasyOCR and stay on Tesseract.
-- Fully open source (Apache 2.0). No API keys, no cost.
+- Languages: Hindi, Marathi, Tamil, Telugu, Kannada, Bengali (Odia/Gujarati not supported)
+- Adds ~500MB model + ~1GB RAM — **does not fit free Streamlit Cloud**
+- Apache 2.0, no API keys, no cost
+
+### Option 2 — Bhashini (Indian Govt API, free for citizen-science)
+
+```bash
+export OCR_FALLBACK=bhashini
+export BHASHINI_USER_ID="<your-ulca-user-id>"
+export BHASHINI_API_KEY="<your-ulca-api-key>"
+streamlit run app.py
+```
+
+- **Free** for individuals/research at https://bhashini.gov.in/ulca (sign up for ULCA, get user ID + API key)
+- Languages: Hindi, Marathi, Tamil, Telugu, Kannada, Bengali, **Odia**, Gujarati
+- Runs as HTTP API — no extra RAM, fits free Streamlit Cloud
+- Falls back silently to Tesseract if the Bhashini service is unreachable
+- Note: pipeline IDs and service availability change occasionally; if accuracy drops, check https://bhashini.gov.in/ulca for current OCR pipelines
 
 ## About VER
 
