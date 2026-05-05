@@ -1197,7 +1197,8 @@
       "total_species_count": 0,
       "geotagged_photos": "",
       "_id": "v_20260505113742_10",
-      "_created_at": "2026-05-05T11:37:42.766526"
+      "_created_at": "2026-05-05T11:37:42.766526",
+      "_updated_at": "2026-05-05T11:39:29.376482"
     },
     {
       "village_name": "Barakutuni",
@@ -1322,6 +1323,6 @@
   ],
   "metadata": {
     "version": "2.0",
-    "last_updated": "2026-05-05T11:39:14.648727"
+    "last_updated": "2026-05-05T11:39:29.376499"
   }
 }
