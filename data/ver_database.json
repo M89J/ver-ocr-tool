@@ -834,7 +834,8 @@
       "total_species_count": 0,
       "geotagged_photos": "",
       "_id": "v_20260505113658_7",
-      "_created_at": "2026-05-05T11:36:58.876753"
+      "_created_at": "2026-05-05T11:36:58.876753",
+      "_updated_at": "2026-05-05T11:38:45.792787"
     },
     {
       "village_name": "Ekatali",
@@ -1319,6 +1320,6 @@
   ],
   "metadata": {
     "version": "2.0",
-    "last_updated": "2026-05-05T11:37:55.945328"
+    "last_updated": "2026-05-05T11:38:45.792824"
   }
 }
