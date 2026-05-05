@@ -356,7 +356,6 @@
       "total_species_count": 0,
       "_id": "v_20260402101926_3",
       "_created_at": "2026-04-02T10:19:26.111946",
-      "pdf_filename": "VER_Kothabhuin_2025-26.pdf",
       "_updated_at": "2026-04-02T12:55:15.701057"
     },
     {
@@ -370,7 +369,6 @@
       "date_of_survey": "",
       "ver_year": "",
       "total_pages": 108,
-      "pdf_filename": "VER_Sahala_2025-26.pdf",
       "extraction_method": "ocr_auto-detect",
       "total_area_ha": "",
       "forest_land_pct": "",
@@ -490,7 +488,6 @@
       "date_of_survey": "",
       "ver_year": "",
       "total_pages": 101,
-      "pdf_filename": "VER_Takba_2025-26.pdf",
       "extraction_method": "ocr_auto-detect",
       "total_area_ha": "",
       "forest_land_pct": "",
