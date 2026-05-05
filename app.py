@@ -630,11 +630,13 @@ with tab_explore:
                 with detail_tabs[0]:
                     st.markdown(f"**{rec.get('village_name','')}** | {rec.get('state','')} | District: {rec.get('district','')} | Block: {rec.get('block','')}")
                     st.markdown(f"GPS: {rec.get('latitude','')}, {rec.get('longitude','')} | Survey: {rec.get('date_of_survey','')}")
-                    # Link to original PDF if stored
+                    # Link to original PDF if stored, otherwise explain why it's missing
                     pdf_fn = rec.get("pdf_filename", "")
                     if pdf_fn and GH_REPO:
                         pdf_url = get_pdf_download_url(pdf_fn, GH_REPO)
                         st.markdown(f"[View Original PDF]({pdf_url})")
+                    else:
+                        st.caption("📄 Original PDF not available — file exceeds GitHub's hosting limit (50 MB). Only extracted data is shown.")
                     c1, c2 = st.columns(2)
                     with c1:
                         st.markdown("**Land Use**")
@@ -1123,12 +1125,18 @@ with tab_manage:
                             if inferred:
                                 record["village_name"] = inferred
 
-                        # Store PDF filename in record
-                        record["pdf_filename"] = file_label
-
-                        # Upload raw PDF to GitHub for review
+                        # Upload raw PDF to GitHub for review — only store filename if upload succeeded
+                        pdf_uploaded = False
                         if GH_TOKEN and GH_REPO:
-                            upload_pdf_to_github(pdf_bytes, file_label, GH_TOKEN, GH_REPO)
+                            pdf_uploaded, _ = upload_pdf_to_github(pdf_bytes, file_label, GH_TOKEN, GH_REPO)
+                        if pdf_uploaded:
+                            record["pdf_filename"] = file_label
+                        else:
+                            size_mb = len(pdf_bytes) / (1024 * 1024)
+                            if size_mb > 50:
+                                st.warning(f"⚠️ **{file_label}** ({size_mb:.1f} MB) is too large to host on GitHub — the original PDF won't be available via 'View Original PDF'. Extracted data is saved.")
+                            else:
+                                st.info(f"Original PDF for **{file_label}** could not be uploaded to GitHub — 'View Original PDF' link will not be shown.")
 
                         vid, was_update = upsert_village(record, github_token=GH_TOKEN, github_repo=GH_REPO)
                         if was_update:
